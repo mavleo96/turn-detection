@@ -1,0 +1,17 @@
+# Makes the src/ packages (data, model, train) importable from scripts/, tests/ and `python -m train`:
+#   pip install -e .   (editable: paths in data.common resolve to this checkout)
+# Dependencies are pinned in requirements.txt.
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turn-detection"
+version = "0.1.0"
+description = "End-of-turn detection for voice-agent pipelines"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["data", "model", "train"]

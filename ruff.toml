@@ -1,5 +1,7 @@
-# Ruff config for the whole repo (demo/ and src/).
+# Ruff config for the whole repo (demo/, src/, scripts/, tests/).
 target-version = "py312"
+# Modules found here are first-party for import sorting.
+src = ["src", "scripts", "."]
 line-length = 120
 
 [lint]

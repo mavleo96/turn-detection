@@ -1,0 +1,34 @@
+# src/ packages, scripts/ and tests/: installed into the conda env `turn` (Python 3.12; the code also
+# runs on 3.11). torch is preinstalled there: torch==2.14.1+cu130
+# Install with (from the repo root):  pip install -r requirements.txt && pip install -e .
+
+datasets==5.1.0
+huggingface_hub==2.2.0
+pyarrow==26.0.0
+pandas==3.1.0
+numpy==2.5.4
+tqdm==4.70.1
+
+# Audio: decoding, resampling (soxr is librosa's high-quality resampler)
+soundfile==0.14.0
+soxr==1.1.0
+# Augmentation (installed with --no-deps so torch/torchaudio stay as preinstalled)
+torch-audiomentations==0.12.0
+julius==0.2.8
+torch-pitch-shift==1.2.5
+primePy==1.3
+
+# Model, training (HF Trainer needs accelerate), metrics, experiment tracking
+transformers==5.20.2
+accelerate==1.15.0
+evaluate==0.4.6
+wandb==0.31.0
+
+# Report plots
+matplotlib==3.11.2
+
+# Threshold selection (precision-recall curve)
+scikit-learn==1.9.1
+
+# Tests
+pytest==9.1.1

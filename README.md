@@ -4,7 +4,10 @@ End-of-turn detection for voice-agent pipelines.
 
 | Directory | What it holds |
 |---|---|
-| `src/` | The turn-detection model (not started yet) |
+| `src/` | Importable code: `data/` (constants, Hugging Face dataset, `EoTDataset`, augmentation), `model/` (the EoT model), `train/` (HF Trainer setup, metrics; `python -m train`) |
+| [`scripts/`](scripts/README.md) | One-off runs: dataset exploration, splits, listening samples, evaluation, prediction |
+| `results/` | Dataset exploration results |
+| `tests/` | Tests for `src/` and `scripts/` |
 | [`demo/`](demo/README.md) | Self-contained demo: live browser mic → streaming ASR + VAD with per-stage latency measurement, split into `frontend/` and `backend/` |
 
 ## Development
