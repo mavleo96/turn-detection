@@ -1,0 +1,13 @@
+# Frontend: no ML dependencies. Installed into the conda env `turn` for now.
+# Install with (from demo/):  pip install -r frontend/requirements.txt
+
+gradio==6.30.0  # brings pandas
+fastapi==0.161.1
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+websockets==17.3
+PyYAML==6.0.3
+
+# Tests
+pytest==9.1.1
+pytest-asyncio==1.4.0

@@ -1,0 +1,10 @@
+# Ruff config for the whole repo (demo/ and src/).
+target-version = "py312"
+line-length = 120
+
+[lint]
+# pycodestyle errors/warnings, pyflakes, import sorting
+select = ["E", "F", "W", "I"]
+
+[lint.isort]
+known-first-party = ["backend", "frontend"]

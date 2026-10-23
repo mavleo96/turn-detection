@@ -1,0 +1,24 @@
+# Backend: installed into the conda env `turn` (Python 3.12). torch is preinstalled there:
+#   torch==2.14.1+cu130, torchaudio==2.11.0+cu130
+# Install the rest with (from demo/):  pip install -r backend/requirements.txt
+
+numpy==2.5.4
+
+# ASR: nvidia/nemotron-speech-streaming-en-0.6b via Transformers
+transformers==5.20.2
+accelerate==1.15.0
+librosa==1.0.0  # required by the Nemotron feature extractor
+
+# VAD (no [audio] extra: it would pin torchaudio<2.10)
+silero-vad==6.2.3
+
+# Server
+fastapi==0.161.1
+uvicorn[standard]==0.54.0
+PyYAML==6.0.3
+
+# Tests
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
+soundfile==0.14.0
