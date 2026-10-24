@@ -12,7 +12,7 @@ Model input is the **last 8 s** of 16 kHz mono audio; output is P(turn complete)
 | `src/turn_detection/data/` | Everything data: constants and paths (`constants.py`); per-clip audio steps shared with serving: decoding, last-8 s crop, 8 kHz round trip, loudness normalization, padding (`audio.py`); the Hugging Face dataset, `EoTDataset`, `EoTCollator` (`dataset.py`); augmentation with torch-audiomentations (`transforms.py`) |
 | `src/turn_detection/model/` | The model only: `EoTConfig` (`config.py`), attention pooling (`modules.py`), `EoTModel`, a transformers `PreTrainedModel` with the encoder setup and layer weights (`model.py`) |
 | `src/turn_detection/train/` | HF `Trainer` setup (`trainer.py`), metrics with scikit-learn (`metrics.py`); `python -m turn_detection.train` |
-| `scripts/` | One-off runs: explore_dataset, split, samples, run_eval, predict |
+| `scripts/` | One-off runs: explore_dataset, split, samples, run_eval, predict, benchmark |
 | `tests/` | Tests for all of the above (CPU only, no network: tiny in-memory datasets stand in for the Hub) |
 | `results/` | Whole-dataset exploration (`explore_dataset.py`) and listening samples (`results/samples/`, gitignored) |
 | `artifacts/` | Generated, gitignored: manifests, training runs |
@@ -38,6 +38,7 @@ python -m turn_detection.train                         # TTD -> artifacts/runs/<
 python -m turn_detection.train --dataset smart-turn    # English smart-turn (uses the manifests)
 python scripts/run_eval.py --model artifacts/runs/<run>/best --benchmark
 python scripts/predict.py --model artifacts/runs/<run>/best clip.wav
+python scripts/benchmark.py --url http://127.0.0.1:8000 --workers 1,10 --calls 100   # the API (serve/), running
 ```
 
 | Step | Main flags | Disk | Time |
@@ -89,6 +90,11 @@ Real smart-turn splits: train 59,221 / val 6,581 / test 7,820 English clips.
 - **run_eval**: metrics at 0.5 and at the model's val threshold (`config.threshold`), by source and
   synthetic flag, predicting through `Trainer.predict`; `--benchmark` times batch-1 inference.
 - **predict**: `EoTPredictor` (audio of any length and rate → P(turn complete)) and a small CLI.
+- **benchmark**: load test for the running inference API (`serve/`, local or its Docker image). Closed loop:
+  `--workers 1,10` workers, each making `--calls` back-to-back requests; or open loop: `--rps 5,10,20`
+  (Poisson arrivals, latency counted from the scheduled send time). Per step: OK / 503 / errors, req/s,
+  p50–p99 and max latency, the server's own time (`Server-Timing`) and mean batch size, and pass/fail
+  against `--slo-ms` (default p95 < 100 ms). `--json` saves the results.
 
 Everything is deterministic: rows sorted by id, strata visited in sorted order, fixed seeds (default
 42), per-clip generators for augmentation.

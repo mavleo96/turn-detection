@@ -8,19 +8,23 @@
     -> {"probability": 0.87, "complete": true, "threshold": 0.43}
 
 Decoding and feature extraction run per request in a thread pool; the model runs through MicroBatcher.
+When too many requests are already waiting for the model (`max_queue`), /predict answers 503 at once
+(with Retry-After) rather than late. Each response carries `Server-Timing: total;dur=<ms>`, the time
+spent in the server.
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from turn_detection.data.audio import decode
 
-from .batcher import MicroBatcher
+from .batcher import MicroBatcher, QueueFull
 from .inference import EoTInference
 
 MAX_AUDIO_S = 60  # longer requests are rejected; only the last 8 s are used anyway
@@ -59,11 +63,20 @@ def read_audio(body: bytes, content_type: str, sample_rate: int) -> tuple[np.nda
     return x, sample_rate
 
 
-def create_app(inference: EoTInference, max_batch: int = 32, max_wait_ms: float = 5.0) -> FastAPI:
-    batcher = MicroBatcher(inference.probabilities, max_batch=max_batch, max_wait_ms=max_wait_ms)
+def create_app(
+    inference: EoTInference,
+    max_batch: int = 4,
+    max_wait_ms: float = 2.0,
+    workers: int = 1,
+    max_queue: int = 0,
+) -> FastAPI:
+    batcher = MicroBatcher(
+        inference.probabilities, max_batch=max_batch, max_wait_ms=max_wait_ms, workers=workers, max_queue=max_queue
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await asyncio.to_thread(inference.warmup, max_batch)  # first passes are slow: not on a request
         batcher.start()
         yield
         await batcher.stop()
@@ -79,19 +92,31 @@ def create_app(inference: EoTInference, max_batch: int = 32, max_wait_ms: float 
             "threshold": inference.threshold,
             "max_batch": batcher.max_batch,
             "max_wait_ms": batcher.max_wait_s * 1000,
+            "workers": batcher.workers,
+            "max_queue": batcher.max_queue,
+            "queued": batcher.queue.qsize(),
             "requests": batcher.requests,
             "batches": batcher.batches,
+            "rejected": batcher.rejected,
             "mean_batch_size": mean_batch,
         }
 
     @app.post("/predict")
-    async def predict(request: Request, sample_rate: int = Query(16000, ge=8000, le=192000)) -> Prediction:
+    async def predict(
+        request: Request, response: Response, sample_rate: int = Query(16000, ge=8000, le=192000)
+    ) -> Prediction:
+        start = time.perf_counter()
         body = await request.body()
         content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
         audio, sample_rate = read_audio(body, content_type, sample_rate)
 
         features = await asyncio.to_thread(inference.features, audio, sample_rate)
-        probability = await batcher.submit(features)
+        try:
+            probability = await batcher.submit(features)
+        except QueueFull:
+            raise HTTPException(503, "server busy, retry shortly", headers={"Retry-After": "1"}) from None
+
+        response.headers["Server-Timing"] = f"total;dur={(time.perf_counter() - start) * 1000:.1f}"
 
         return Prediction(
             probability=probability,

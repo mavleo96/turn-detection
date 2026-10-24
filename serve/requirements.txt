@@ -9,7 +9,9 @@ transformers==5.20.2
 
 fastapi==0.161.1
 uvicorn==0.54.0
+uvloop==0.23.0     # faster event loop; uvicorn picks it up when installed
+httptools==0.9.0   # faster HTTP parsing, likewise
 
-# Tests
+# Tests and the load test (serve/loadtest.py)
 pytest==9.1.1
 httpx==0.28.1

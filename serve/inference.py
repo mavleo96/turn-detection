@@ -41,6 +41,12 @@ class EoTInference:
         out = self.feature_extractor(x, sampling_rate=SAMPLE_RATE, return_tensors="np")
         return out.input_features[0]
 
+    def warmup(self, max_batch: int = 1) -> None:
+        """Run the preprocessing and the model once (batch 1 and `max_batch`): the first passes are slow."""
+        features = self.features(np.zeros(SAMPLE_RATE, dtype=np.float32), SAMPLE_RATE)
+        for batch in sorted({1, max_batch}):
+            self.probabilities(np.stack([features] * batch))
+
     @torch.inference_mode()
     def probabilities(self, features: np.ndarray) -> np.ndarray:
         """(B, 80, frames) features -> (B,) P(turn complete)."""
