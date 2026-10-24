@@ -15,7 +15,7 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
 ## Environment
 - Python env: `/venv/turn` (conda env `turn`, torch 2.14.1+cu130). `/venv/main` has no transformers.
 - Ruff: `/venv/triton/bin/ruff` (pre-commit runs ruff check --fix + format). Line length 120.
-- Tests: `/venv/turn/bin/python -m pytest -q` (~30 s, CPU, no network). `tests/` is gitignored (kept local).
+- Tests: `/venv/turn/bin/python -m pytest -q` (~30 s, CPU, no network).
 - GPU: RTX 3060. HF cache: `HF_HOME=/workspace/.hf_home` (TTD ~26 GB prepared, smart-turn train 39 GB + test 5 GB).
 - W&B logs to a CoreWeave-hosted server (`api.forge.coreweave.com`, team `mavleo96-team`, project `turn-detection`);
   `train()` sets `WANDB_PROJECT` from `--project` (the HF W&B callback ignores `args.project`).

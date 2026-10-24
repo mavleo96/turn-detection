@@ -226,9 +226,8 @@ runs/
 artifacts/
 # Weights & Biases local run files
 wandb/
-# dataset exploration results and listening samples; tests (kept local)
+# dataset exploration results and listening samples
 results/
-tests/
 
 # temporarily ignore serve directory
 serve/
