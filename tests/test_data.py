@@ -5,6 +5,7 @@ from datasets import Dataset
 from transformers import WhisperFeatureExtractor
 
 from turn_detection.data import HOLDOUT, LANGUAGE, SAMPLE_RATE, SEED, VAL_FRAC, WINDOW_S
+from turn_detection.data import dataset as dataset_module
 from turn_detection.data.audio import band_limit, normalize_loudness, pad_window, prepare_clip
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.data.transforms import build_augment
@@ -204,3 +205,9 @@ def test_smart_turn_val_is_split_from_hub_order(hub):
     expected = Dataset.from_dict({"id": kept}).train_test_split(test_size=VAL_FRAC, seed=SEED)
     assert load_split("validation", ["smart-turn"])["id"] == expected["test"]["id"]
     assert load_split("train", ["smart-turn"])["id"] == expected["train"]["id"]
+
+
+def test_load_split_leaves_out_undecodable_clips(hub, monkeypatch):
+    monkeypatch.setattr(dataset_module, "UNDECODABLE", ("spokenwoz_train_001",))
+    ids = load_split("train", ["ttd"])["id"]
+    assert "spokenwoz_train_001" not in ids and len(ids) == 39

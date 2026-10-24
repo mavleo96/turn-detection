@@ -78,7 +78,9 @@ persistent volume on this instance: after a recycle the first step downloads it 
     English test split, so the holdout sources' test clips (402 + 394) come from sources never trained or tuned on.
   - TTD: its own train / validation / test splits (`data_source` becomes `dataset`).
 
-  Real splits (smart-turn + TTD): train 52,893 + 333,284 / validation 5,877 + 37,600 / test 7,820 + 60,574 clips.
+  - Left out: 4 SpokenWOZ train clips FFmpeg can't decode (`UNDECODABLE` in `turn_detection.data`; soundfile can).
+
+  Real splits (smart-turn + TTD): train 52,893 + 333,280 / validation 5,877 + 37,600 / test 7,820 + 60,574 clips.
 - **`data.dataset.EoTDataset(split, augment, ...)`**, per item, decodes the FLAC (~2 ms), keeps the last `window_s`
   seconds, band-limits them to 4 kHz (`band_limit`: a 16 → 8 → 16 kHz round trip, ~1.5 ms), normalizes them to
   −30 dBFS RMS (near-silent clips are left alone), optionally augments, and only then zero-pads on the left to

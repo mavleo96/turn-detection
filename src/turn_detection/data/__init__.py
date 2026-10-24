@@ -31,6 +31,14 @@ DATASETS = ("smart-turn", "ttd")  # what load_split can combine
 
 # Note: smart-turn sources kept out of train and validation, so their test clips are from sources never trained on
 HOLDOUT = ("human_5", "rime_2")
+# Note: TTD clips torchcodec (FFmpeg) can't decode ("Invalid data found when processing input"; soundfile can), all
+# SpokenWOZ train; found by decoding all 498,048 split clips (2026-10-24). load_split leaves them out
+UNDECODABLE = (
+    "spokenwoz_MUL0487_0_005",
+    "spokenwoz_MUL1164_1_034",
+    "spokenwoz_MUL2064_1_042",
+    "spokenwoz_MUL2519_1_002",
+)
 VAL_FRAC = 0.1  # of smart-turn train (English, without HOLDOUT) for validation
 LANGUAGE = "eng"  # smart-turn
 META_COLUMNS = ["id", "language", "endpoint_bool", "midfiller", "endfiller", "synthetic", "spoken_text", "dataset"]

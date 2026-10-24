@@ -65,8 +65,9 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   to 0, grad clip 1.0, bf16, frozen encoder (25k trainable params), best epoch by val ROC AUC, threshold = best F1
   on val (saved in `best/config.json`).
 - Splits (`load_split`): train = smart-turn English train without `HOLDOUT`, 90% (random, seed 42) + TTD train
-  (52,893 + 333,284); validation = the other 10% + TTD validation (5,877 + 37,600); test = all English smart-turn
-  test (holdout sources included: 402 human_5 + 394 rime_2, never seen in train or val) + TTD test (7,820 + 60,574).
+  (52,893 + 333,280; 4 TTD clips torchcodec can't decode are left out: `UNDECODABLE`); validation = the other
+  10% + TTD validation (5,877 + 37,600); test = all English smart-turn test (holdout sources included: 402 human_5
+  + 394 rime_2, never seen in train or val) + TTD test (7,820 + 60,574).
 - Metrics everywhere: accuracy, f1, fpr (incomplete predicted complete = interrupts), fnr (complete predicted
   incomplete = waits too long), roc_auc, pr_auc.
 - Time on the RTX 3060: TTD ~30 min / 5 epochs (~1,100 clips/s), smart-turn ~7 min, both ~35 min; eval ~2 min.

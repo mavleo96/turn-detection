@@ -20,6 +20,7 @@ from . import (
     SMART_TURN_TEST,
     SMART_TURN_TRAIN,
     TTD,
+    UNDECODABLE,
     VAL_FRAC,
     WINDOW_S,
 )
@@ -59,7 +60,9 @@ def load_split(split: str, datasets: Sequence[str] = DATASETS, num_proc: int | N
         parts.append(smart_turn.cast_column("label", LABELS))
 
     if "ttd" in datasets:
-        parts.append(load_dataset(TTD, split=split, num_proc=num_proc).rename_column("data_source", "dataset"))
+        ttd = load_dataset(TTD, split=split, num_proc=num_proc)
+        ttd = ttd.filter(lambda clip_id: clip_id not in UNDECODABLE, input_columns="id", num_proc=num_proc)
+        parts.append(ttd.rename_column("data_source", "dataset"))
 
     # Note: the repos declare different audio features (ttd: sampling_rate 16000); an Audio cast is metadata only
     parts = [d.select_columns(COLUMNS).cast_column("audio", AUDIO) for d in parts]

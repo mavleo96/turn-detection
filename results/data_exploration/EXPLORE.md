@@ -18,6 +18,9 @@ file, written by `scripts/explore_dataset.py` (which also explores the raw smart
 
 ## Splits
 
+Since this write-up, `load_split` leaves out 4 SpokenWOZ train clips torchcodec can't decode (`UNDECODABLE`), so
+TTD train is 333,280 clips and train 386,173; the shares below change by less than 0.01 percentage points.
+
 | split | clips | hours | complete | smart-turn share (clips / hours) |
 |---|---|---|---|---|
 | train | 386,177 | 684.1 | 50.2% | 13.7% / 19.6% |
