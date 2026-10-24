@@ -226,6 +226,6 @@ runs/
 artifacts/
 # Weights & Biases local run files
 wandb/
-# dataset exploration results and listening samples; the root tests/ (kept local)
-results/
-/tests/
+# dataset exploration results and listening samples (except the peer-reviewed TTD vs smart-turn analysis)
+results/*
+!results/ttd_vs_smart_turn/

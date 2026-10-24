@@ -26,7 +26,7 @@ from transformers import Trainer, TrainerCallback, TrainingArguments, WhisperFea
 from transformers.trainer_utils import IntervalStrategy, SaveStrategy, SchedulerType
 
 from turn_detection.data.constants import DATASETS, MANIFESTS_DIR, RUNS_DIR, WINDOW_S
-from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
+from turn_detection.data.dataset import EoTCollator, EoTConcat, EoTDataset, load_split
 from turn_detection.data.transforms import GAIN_DB, NOISE_P, build_augment
 from turn_detection.model import EoTModel
 
@@ -45,9 +45,13 @@ class EoTTrainingArguments(TrainingArguments):
     dropout: float = 0.1
 
     # data (str paths: TrainingArguments are serialized to JSON for wandb)
-    dataset: str = field(default="ttd", metadata={"help": "training data: ttd or smart-turn (data.constants)"})
+    dataset: str = field(
+        default="ttd", metadata={"help": "training data: ttd, smart-turn, or both as ttd,smart-turn (data.constants)"}
+    )
     manifests_dir: str = str(MANIFESTS_DIR)  # smart-turn
-    max_train_samples: int | None = field(default=None, metadata={"help": "a random N of the training clips"})
+    max_train_samples: int | None = field(
+        default=None, metadata={"help": "a random N of the training clips (per dataset)"}
+    )
 
     # preprocessing (also stored in the saved model's config)
     narrowband: bool = field(default=True, metadata={"help": "8 kHz round trip: band-limit all audio to 4 kHz"})
@@ -83,19 +87,19 @@ class EoTTrainingArguments(TrainingArguments):
 class SetEpochCallback(TrainerCallback):
     """Seeds the dataset's augmentation with the epoch (DataLoader workers are recreated each epoch)."""
 
-    def __init__(self, dataset: EoTDataset):
+    def __init__(self, dataset: EoTConcat):
         self.dataset = dataset
 
     def on_epoch_begin(self, args, state, control, **kwargs):
         self.dataset.set_epoch(int(state.epoch or 0))
 
 
-def load_sets(args: EoTTrainingArguments) -> dict[str, tuple[HFDataset, pd.Series]]:
-    """{train, val} -> (the HF split holding the set's clips, their ids)."""
-    if args.dataset not in DATASETS:
-        raise ValueError(f"dataset must be one of {sorted(DATASETS)}, got {args.dataset!r}")
+def load_sets(name: str, args: EoTTrainingArguments) -> dict[str, tuple[HFDataset, pd.Series]]:
+    """Dataset `name`: {train, val} -> (the HF split holding the set's clips, their ids)."""
+    if name not in DATASETS:
+        raise ValueError(f"dataset must be one of {sorted(DATASETS)}, got {name!r}")
 
-    if args.dataset == "ttd":
+    if name == "ttd":
         train = load_split("train", dataset="ttd")
         val = load_split("validation", dataset="ttd")
         sets = {"train": (train, pd.Series(train["id"])), "val": (val, pd.Series(val["id"]))}
@@ -124,8 +128,9 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
     os.environ.setdefault("WANDB_PROJECT", args.project)  # the W&B callback ignores args.project
     out = Path(args.output_dir)
 
-    # Data
-    sets = load_sets(args)
+    # Data: one EoTDataset per dataset in --dataset, joined
+    names = args.dataset.split(",")
+    sets = {name: load_sets(name, args) for name in names}
 
     augment = None
     if args.augment:
@@ -134,13 +139,18 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
         # SetEpochCallback only reaches the workers because they are recreated every epoch.
         raise ValueError("dataloader_persistent_workers would repeat the same augmentation every epoch")
 
-    preprocessing = {
-        "narrowband": args.narrowband,
-        "loudness_dbfs": args.loudness_dbfs,
-        "label_column": DATASETS[args.dataset]["label"],
-    }
-    train_ds = EoTDataset(*sets["train"], augment, seed=args.seed, **preprocessing)
-    val_ds = EoTDataset(*sets["val"], seed=args.seed, **preprocessing)
+    train_parts, val_parts = [], []
+    for k, name in enumerate(names):
+        kwargs = {
+            "seed": args.seed + k,  # different augmentation for item i of each dataset
+            "narrowband": args.narrowband,
+            "loudness_dbfs": args.loudness_dbfs,
+            "label_column": DATASETS[name]["label"],
+        }
+        train_parts.append(EoTDataset(*sets[name]["train"], augment, **kwargs))
+        val_parts.append(EoTDataset(*sets[name]["val"], **kwargs))
+    train_ds = EoTConcat(train_parts)
+    val_ds = EoTConcat(val_parts)
 
     # The front end of the same Whisper as the encoder, sized for the model's window instead of 30 s.
     feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=WINDOW_S)

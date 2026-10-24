@@ -151,8 +151,9 @@ reached 0.95 in the same smoke run, so a full run will show how much freezing co
 
 Each run directory holds the Trainer's last checkpoints (`checkpoint-<step>/`, with `trainer_state.json`),
 `best/` (`config.json` with the threshold + `model.safetensors`), and `final_results.json` (val metrics
-at the threshold). Metrics (scikit-learn): accuracy, precision, recall, F1, ROC AUC and **false endpoint
-rate** (incomplete turns predicted complete, i.e. the agent would interrupt).
+at the threshold). Metrics (scikit-learn; positive class = complete): accuracy, F1, **FPR** (incomplete turns predicted
+complete: the agent interrupts), **FNR** (complete turns predicted incomplete: the agent waits too long),
+ROC AUC and PR AUC (average precision).
 
 ## Assumptions
 

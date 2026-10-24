@@ -1,12 +1,13 @@
 """Metrics for P(turn complete) with scikit-learn. Positive class = turn complete.
 
-`false_endpoint_rate` is the share of incomplete turns predicted complete: the agent would interrupt
-the user, which is the costly error for a voice agent.
+- `fpr` (false positive rate): incomplete turns predicted complete, i.e. the agent interrupts the user.
+- `fnr` (false negative rate): complete turns predicted incomplete, i.e. the agent waits too long.
+- `pr_auc`: area under the precision-recall curve (average precision), next to `roc_auc`.
 """
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, precision_recall_curve, precision_recall_fscore_support, roc_auc_score
+from sklearn.metrics import accuracy_score, average_precision_score, f1_score, precision_recall_curve, roc_auc_score
 from transformers import EvalPrediction
 
 
@@ -15,18 +16,21 @@ def sigmoid(logits: np.ndarray) -> np.ndarray:
 
 
 def eot_metrics(labels: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> dict:
-    """accuracy, precision, recall, f1, false_endpoint_rate and (when both classes occur) roc_auc."""
+    """accuracy, f1, fpr, fnr and (when both classes occur) roc_auc and pr_auc."""
     labels = np.asarray(labels).astype(int)
     preds = (np.asarray(probs) >= threshold).astype(int)
+    complete, incomplete = labels == 1, labels == 0
 
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="binary", zero_division=0)
-    m = {"accuracy": accuracy_score(labels, preds), "precision": precision, "recall": recall, "f1": f1}
+    m = {
+        "accuracy": accuracy_score(labels, preds),
+        "f1": f1_score(labels, preds, zero_division=0),
+        "fpr": preds[incomplete].sum() / max(incomplete.sum(), 1),
+        "fnr": (1 - preds[complete]).sum() / max(complete.sum(), 1),
+    }
 
-    incomplete = labels == 0
-    m["false_endpoint_rate"] = preds[incomplete].sum() / max(incomplete.sum(), 1)
-
-    if len(np.unique(labels)) == 2:  # ROC AUC is undefined with one class
+    if len(np.unique(labels)) == 2:  # undefined with one class
         m["roc_auc"] = roc_auc_score(labels, probs)
+        m["pr_auc"] = average_precision_score(labels, probs)
 
     return {"threshold": float(threshold), **{k: float(v) for k, v in m.items()}}
 
@@ -46,14 +50,14 @@ def best_f1_threshold(labels: np.ndarray, probs: np.ndarray) -> float:
 
 def breakdown(df: pd.DataFrame, by: str, threshold: float) -> pd.DataFrame:
     """Metrics per group of `df` (columns: label, prob, and `by`)."""
-    columns = ("accuracy", "f1", "false_endpoint_rate", "roc_auc")
+    columns = ("accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc")
 
     rows = []
     for key, g in df.groupby(by, sort=True):
         m = eot_metrics(g["label"].to_numpy(), g["prob"].to_numpy(), threshold)
         row = {by: key, "n": len(g)}
         for k in columns:
-            row[k] = m.get(k)  # roc_auc is missing for single-class groups
+            row[k] = m.get(k)  # roc_auc and pr_auc are missing for single-class groups
         rows.append(row)
 
     return pd.DataFrame(rows)
