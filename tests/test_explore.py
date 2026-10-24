@@ -56,11 +56,11 @@ def test_metadata_only_tables():
     assert "overview" in t and "duration_by_language" not in t and "anomalies" not in t
 
 
-def test_write_results(tmp_path):
+def test_write_results(tmp_path, hub):
     write_results(fake_df(), tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["rows"] == 200
     assert (tmp_path / "tables" / "languages.csv").exists() and (tmp_path / "duration_hist.png").exists()
     text = (tmp_path / "summary.md").read_text()
     assert "## Task spec vs. measured" in text and "## Anomalies" in text
-    assert len(pd.read_parquet(tmp_path / "clip_stats.parquet")) == 200
+    assert "## Splits by corpus" in text and not (tmp_path / "clip_stats.parquet").exists()

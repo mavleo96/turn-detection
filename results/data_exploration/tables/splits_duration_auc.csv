@@ -1,0 +1,15 @@
+corpus,source,duration AUC
+smart-turn,chirp3_1,0.529
+smart-turn,chirp3_3_short,0.375
+smart-turn,human_5,0.274
+smart-turn,human_convcollector_1,0.496
+smart-turn,liva_1,0.549
+smart-turn,midcentury_1,0.567
+smart-turn,orpheus_endfiller_1,0.53
+smart-turn,orpheus_grammar_1,0.558
+smart-turn,orpheus_midfiller_1,0.591
+smart-turn,rime_2,0.371
+ttd,seamless,0.462
+ttd,spokenwoz,0.479
+smart-turn,(all),0.516
+ttd,(all),0.445

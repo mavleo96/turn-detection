@@ -1,0 +1,9 @@
+split,label,kind,count,mean,min,5%,50%,95%,max,> 8 s
+test,complete,human,2649.0,9.84,0.849,2.934,11.259,16.0,30.578,0.66
+test,complete,synthetic,1184.0,7.146,0.36,2.222,6.969,12.48,15.6,0.361
+test,incomplete,human,2718.0,9.415,0.988,3.083,10.665,15.371,16.0,0.645
+test,incomplete,synthetic,1269.0,6.909,0.44,1.995,6.76,11.897,15.84,0.327
+train,complete,human,21652.0,9.68,0.372,2.852,11.03,16.0,32.596,0.648
+train,complete,synthetic,10791.0,7.106,0.28,2.496,6.827,12.48,15.88,0.353
+train,incomplete,human,21965.0,9.499,0.57,3.117,10.668,15.622,45.32,0.656
+train,incomplete,synthetic,11394.0,6.899,0.24,2.16,6.699,12.12,15.88,0.322

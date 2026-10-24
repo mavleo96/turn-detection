@@ -16,7 +16,7 @@ Model input is the **last 8 s** of 16 kHz mono audio; output is P(turn complete)
 | `src/turn_detection/train/` | HF `Trainer` setup (`trainer.py`), metrics with scikit-learn (`metrics.py`); `python -m turn_detection.train` |
 | `scripts/` | One-off runs: explore_dataset, samples, run_eval, predict |
 | `tests/` | Tests for all of the above (CPU only, no network: tiny in-memory datasets stand in for the Hub) |
-| `results/` | Whole-dataset exploration (`explore_dataset.py`) and listening samples (`results/samples/`, gitignored) |
+| `results/` | Dataset and split exploration (`data_exploration/`, tracked) and listening samples (`results/samples/`, gitignored) |
 | `artifacts/` | Generated, gitignored: training runs |
 
 ## Setup
@@ -33,7 +33,7 @@ pytest                  # ~20 s
 ## Steps
 
 ```bash
-python scripts/explore_dataset.py   # downloads both splits into the HF cache; stats -> results/
+python scripts/explore_dataset.py   # smart-turn repos + the training splits -> results/data_exploration/
 python scripts/samples.py           # -> results/samples/ (WAVs + CSV), for listening
 python -m turn_detection.train                         # smart-turn + TTD -> artifacts/runs/<timestamp>/
 python -m turn_detection.train --datasets ttd          # one of them
@@ -43,7 +43,7 @@ python scripts/predict.py --model artifacts/runs/<run>/best clip.wav
 
 | Step | Main flags | Disk | Time |
 |---|---|---|---|
-| `explore_dataset` | `--num-proc 16`, `--no-audio` | ~94 GB HF cache (46 GB parquet + `datasets`' Arrow copy), 13 MB results | first run download-bound; from the cache ~2 min |
+| `explore_dataset` | `--num-proc 16`, `--no-audio` | ~94 GB HF cache (46 GB parquet + `datasets`' Arrow copy), < 1 MB results | first run download-bound; from the cache a few minutes |
 | `samples` | `--per-bucket 15`, `--seed` | ~50 MB | seconds |
 | `python -m turn_detection.train` | `--datasets smart-turn ttd`, `--max_train_samples`, `--augment false`, `--gain_db`, `--noise_p`, `--freeze_encoder`, plus every `TrainingArguments` flag (`--learning_rate`, `--num_train_epochs`, `--max_steps`, `--report_to`, ...) | ~200 MB per run (2 checkpoints + best) | ~70–80 s per epoch on the RTX 3060, frozen encoder (estimate; data loading is the limit) |
 | `run_eval` | `--model`, `--datasets`, `--benchmark` | small | ~30 s |
@@ -85,8 +85,10 @@ Real splits (smart-turn + TTD): train 52,893 + 333,284 / validation 5,877 + 37,6
 
 - **explore_dataset**: every row of both splits, all 23 languages: languages, sources, labels, synthetic
   flag, fillers, nulls, id checks, the task spec's rough numbers vs. measured, and audio stats for
-  every clip (duration, sample rate, channels, clipping, trailing silence). Writes `results/summary.md`,
-  `summary.json`, `tables/*.csv`, `clip_stats.parquet` and plots.
+  every clip (duration, sample rate, channels, clipping, trailing silence); and the training splits (smart-turn +
+  TTD as `load_split` builds them): clips, hours, label ratio and clip length per corpus, source and `--datasets`
+  choice. Writes `results/data_exploration/summary.md`, `summary.json`, `tables/*.csv` and plots; the write-up of
+  the split findings is `results/data_exploration/EXPLORE.md`.
 - **samples**: 15 random English clips per (label × synthetic) bucket, as WAVs at their original rate.
 - **run_eval**: metrics on the test split at 0.5 and at the model's val threshold (`config.threshold`),
   overall and by source (`dataset`), predicting through `Trainer.predict`; `--benchmark` times batch-1 inference.
@@ -174,6 +176,6 @@ ROC AUC and PR AUC (average precision).
 - The dataset is downloaded whole through `datasets` (cached) instead of streamed into English-only
   shards; training decodes clips on the fly instead of reading exported arrays.
 - One-off steps are scripts in `scripts/`; `inspect.py` is `samples.py` (so it can't shadow Python's
-  `inspect`); the English data report is part of `explore_dataset.py`'s `results/summary.md`.
+  `inspect`); the English data report is part of `explore_dataset.py`'s `results/data_exploration/summary.md`.
 - Resampling uses `soxr` (librosa's high-quality backend) directly.
 - Runs in the existing Python 3.12 env; the code avoids 3.12-only syntax.

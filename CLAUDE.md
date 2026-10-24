@@ -49,7 +49,8 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   `load_dataset` in `dataset`, `explore_dataset` and `samples`).
 - `demo/`: separate browser mic -> Silero VAD + Nemotron streaming ASR harness (own env/tests).
 - `serve/` (FastAPI + micro-batching, CPU Dockerfile) lives on the `serve` branch only (ignored on `main`).
-- Generated, gitignored: `artifacts/` (runs, models/untrained), `results/` (analyses; `ttd_vs_smart_turn/` tracked).
+- Generated, gitignored: `artifacts/` (runs, models/untrained), `results/` (analyses; tracked: `data_exploration/`
+  = `explore_dataset.py` output + `EXPLORE.md`, `ttd_vs_smart_turn/` = `FINDINGS.md`).
 
 ## Training and evaluation
 - `python -m turn_detection.train [--datasets smart-turn ttd]` (default both). 5 epochs, batch 64,
