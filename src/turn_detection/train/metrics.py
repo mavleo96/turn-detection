@@ -1,25 +1,13 @@
-"""Metrics for P(turn complete) with Hugging Face `evaluate`. Positive class = turn complete.
+"""Metrics for P(turn complete) with scikit-learn. Positive class = turn complete.
 
 `false_endpoint_rate` is the share of incomplete turns predicted complete: the agent would interrupt
 the user, which is the costly error for a voice agent.
 """
 
-from functools import cache
-
-import evaluate
 import numpy as np
 import pandas as pd
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import accuracy_score, precision_recall_curve, precision_recall_fscore_support, roc_auc_score
 from transformers import EvalPrediction
-
-
-@cache
-def _metrics():
-    return (
-        evaluate.combine(["accuracy", "precision", "recall", "f1"]),
-        evaluate.load("roc_auc"),
-        evaluate.load("confusion_matrix"),
-    )
 
 
 def sigmoid(logits: np.ndarray) -> np.ndarray:
@@ -30,16 +18,15 @@ def eot_metrics(labels: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -
     """accuracy, precision, recall, f1, false_endpoint_rate and (when both classes occur) roc_auc."""
     labels = np.asarray(labels).astype(int)
     preds = (np.asarray(probs) >= threshold).astype(int)
-    classification, roc_auc, confusion = _metrics()
 
-    m = classification.compute(predictions=preds, references=labels)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="binary", zero_division=0)
+    m = {"accuracy": accuracy_score(labels, preds), "precision": precision, "recall": recall, "f1": f1}
 
-    matrix = confusion.compute(predictions=preds, references=labels, labels=[0, 1])["confusion_matrix"]
-    tn, fp, _, _ = np.ravel(matrix)
-    m["false_endpoint_rate"] = fp / max(fp + tn, 1)
+    incomplete = labels == 0
+    m["false_endpoint_rate"] = preds[incomplete].sum() / max(incomplete.sum(), 1)
 
     if len(np.unique(labels)) == 2:  # ROC AUC is undefined with one class
-        m["roc_auc"] = roc_auc.compute(prediction_scores=probs, references=labels)["roc_auc"]
+        m["roc_auc"] = roc_auc_score(labels, probs)
 
     return {"threshold": float(threshold), **{k: float(v) for k, v in m.items()}}
 

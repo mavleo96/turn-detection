@@ -16,7 +16,7 @@ import soxr
 import torch
 from transformers import WhisperFeatureExtractor
 
-from turn_detection.data.audio import crop_window, decode, narrowband, pad_window
+from turn_detection.data.audio import decode, pad_window, prepare_clip
 from turn_detection.data.constants import SAMPLE_RATE
 from turn_detection.model import EoTModel
 
@@ -35,10 +35,8 @@ class EoTPredictor:
         if sample_rate != SAMPLE_RATE:
             x = soxr.resample(x, sample_rate, SAMPLE_RATE, quality="HQ").astype(np.float32)
         # Same preprocessing as training (turn_detection.data.audio), minus augmentation.
-        x = crop_window(x)
-        if self.model.config.narrowband:
-            x = narrowband(x)
-        window = pad_window(x, padding=self.model.config.padding)
+        x = prepare_clip(x, self.model.config.narrowband, self.model.config.loudness_dbfs)
+        window = pad_window(x)
 
         features = self.feature_extractor(window, sampling_rate=SAMPLE_RATE, return_tensors="pt")
         features = features.input_features.to(self.device)

@@ -1,7 +1,8 @@
 """Training with the Hugging Face `Trainer`: argument dataclasses, dataset setup and the run itself.
 
-Inputs: the train split from the Hugging Face cache (data.dataset.load_split) and the id lists written by
-scripts/split.py: manifests/{train,val}.parquet, or folds/<source>/{train,val,heldout}.parquet.
+Inputs (`dataset`, data.constants.DATASETS), from the Hugging Face cache (data.dataset.load_split):
+  - ttd (default): every clip of its train split; its validation split for model selection and the threshold.
+  - smart-turn: its train split, with the id lists written by scripts/split.py (manifests/{train,val}.parquet).
 
 What is ours on top of `Trainer`: freezing the Whisper encoder (`freeze_encoder`, default on: the
 Trainer's default AdamW then only gets the layer weights, pooling and MLP), a callback that tells the
@@ -13,20 +14,20 @@ the threshold in its config, plus the feature extractor, both via save_pretraine
 `final_results.json`; metrics also go to Weights & Biases.
 """
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import torch
 from datasets import Dataset as HFDataset
 from transformers import Trainer, TrainerCallback, TrainingArguments, WhisperFeatureExtractor
 from transformers.trainer_utils import IntervalStrategy, SaveStrategy, SchedulerType
 
-from turn_detection.data.constants import FOLDS_DIR, MANIFESTS_DIR, RUNS_DIR, WINDOW_S
+from turn_detection.data.constants import DATASETS, MANIFESTS_DIR, RUNS_DIR, WINDOW_S
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
-from turn_detection.data.transforms import AugmentConfig, build_augment
+from turn_detection.data.transforms import GAIN_DB, NOISE_P, build_augment
 from turn_detection.model import EoTModel
 
 from .metrics import best_f1_threshold, compute_metrics, eot_metrics, sigmoid
@@ -44,22 +45,21 @@ class EoTTrainingArguments(TrainingArguments):
     dropout: float = 0.1
 
     # data (str paths: TrainingArguments are serialized to JSON for wandb)
-    manifests_dir: str = str(MANIFESTS_DIR)
-    folds_dir: str = str(FOLDS_DIR)
-    fold: str | None = field(default=None, metadata={"help": "hold out this human source (folds/<fold>/)"})
-    max_train_samples: int | None = field(default=None, metadata={"help": "only the first N training clips"})
+    dataset: str = field(default="ttd", metadata={"help": "training data: ttd or smart-turn (data.constants)"})
+    manifests_dir: str = str(MANIFESTS_DIR)  # smart-turn
+    max_train_samples: int | None = field(default=None, metadata={"help": "a random N of the training clips"})
 
     # preprocessing (also stored in the saved model's config)
-    padding: str = field(default="left", metadata={"help": "zero-pad short clips on the left or the right"})
     narrowband: bool = field(default=True, metadata={"help": "8 kHz round trip: band-limit all audio to 4 kHz"})
+    loudness_dbfs: float | None = field(default=-30.0, metadata={"help": "normalize clips to this RMS level"})
 
     # augmentation
     augment: bool = True
-    gain_db: float = AugmentConfig.gain_db
-    noise_p: float = AugmentConfig.noise_p
+    gain_db: float = GAIN_DB
+    noise_p: float = NOISE_P
 
     # Trainer defaults for this project
-    output_dir: str | None = field(default=None, metadata={"help": "default: artifacts/runs/<timestamp>[-fold-<f>]"})
+    output_dir: str | None = field(default=None, metadata={"help": "default: artifacts/runs/<timestamp>"})
     num_train_epochs: float = 5
     per_device_train_batch_size: int = 64
     per_device_eval_batch_size: int = 128
@@ -77,7 +77,7 @@ class EoTTrainingArguments(TrainingArguments):
     dataloader_num_workers: int = 16  # ~1,200 clips/s of decode + augment + features (GPU needs ~520)
     report_to: None | str | list[str] = "wandb"
     remove_unused_columns: bool = False  # items carry "input_values" (waveforms) for the collator, not forward()
-    project: str = "turn-detection"
+    project: str = "turn-detection"  # W&B project (set as WANDB_PROJECT in train(); Trackio reads it directly)
 
 
 class SetEpochCallback(TrainerCallback):
@@ -90,62 +90,57 @@ class SetEpochCallback(TrainerCallback):
         self.dataset.set_epoch(int(state.epoch or 0))
 
 
-def load_ids(args: EoTTrainingArguments) -> dict[str, pd.Series]:
-    """Clip ids of {train, val[, heldout]} from the manifests, or from the fold's files."""
-    if args.fold:
-        src = Path(args.folds_dir) / args.fold
-        names = ["train", "val", "heldout"]
-    else:
-        src = Path(args.manifests_dir)
-        names = ["train", "val"]
+def load_sets(args: EoTTrainingArguments) -> dict[str, tuple[HFDataset, pd.Series]]:
+    """{train, val} -> (the HF split holding the set's clips, their ids)."""
+    if args.dataset not in DATASETS:
+        raise ValueError(f"dataset must be one of {sorted(DATASETS)}, got {args.dataset!r}")
 
-    ids = {}
-    for name in names:
-        ids[name] = pd.read_parquet(src / f"{name}.parquet", columns=["id"])["id"]
+    if args.dataset == "ttd":
+        train = load_split("train", dataset="ttd")
+        val = load_split("validation", dataset="ttd")
+        sets = {"train": (train, pd.Series(train["id"])), "val": (val, pd.Series(val["id"]))}
+    else:  # smart-turn: train and val both come from its train split (scripts/split.py)
+        source = load_split("train", dataset="smart-turn")
+        sets = {}
+        for name in ("train", "val"):
+            ids = pd.read_parquet(Path(args.manifests_dir) / f"{name}.parquet", columns=["id"])["id"]
+            sets[name] = (source, ids)
 
+    # A random subset: the ttd train split is ordered by source (all SpokenWOZ rows first).
     if args.max_train_samples is not None:
-        ids["train"] = ids["train"].iloc[: args.max_train_samples]
+        ds, ids = sets["train"]
+        n = min(args.max_train_samples, len(ids))
+        sets["train"] = (ds, ids.sample(n=n, random_state=args.seed))
 
-    return ids
-
-
-def default_output_dir(fold: str | None) -> str:
-    """artifacts/runs/<timestamp>[-fold-<fold>]"""
-    name = datetime.now().strftime("%Y%m%d-%H%M%S")
-    if fold:
-        name += f"-fold-{fold}"
-    return str(RUNS_DIR / name)
+    return sets
 
 
-def predict_probs(trainer: Trainer, dataset: EoTDataset) -> np.ndarray:
-    """P(turn complete) for every clip of `dataset`."""
-    logits = trainer.predict(dataset).predictions
-    return sigmoid(logits)
-
-
-def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFDataset | None = None) -> Path:
-    """Train, pick the val threshold, save `best/`; returns the run directory. `model` and `source`
-    (the train split) can be injected (tests); by default Whisper Tiny and the cached split are loaded."""
+def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
+    """Train, pick the val threshold, save `best/`; returns the run directory. `model` can be injected (tests);
+    by default a new model on the pretrained `whisper` encoder."""
     if args.output_dir is None:
-        args.output_dir = default_output_dir(args.fold)
+        args.output_dir = str(RUNS_DIR / datetime.now().strftime("%Y%m%d-%H%M%S"))
     args.run_name = args.run_name or Path(args.output_dir).name
+    os.environ.setdefault("WANDB_PROJECT", args.project)  # the W&B callback ignores args.project
     out = Path(args.output_dir)
 
     # Data
-    if source is None:
-        source = load_split("train")
-    ids = load_ids(args)
+    sets = load_sets(args)
 
     augment = None
     if args.augment:
-        augment = build_augment(AugmentConfig(gain_db=args.gain_db, noise_p=args.noise_p))
+        augment = build_augment(args.gain_db, args.noise_p)
     if augment is not None and args.dataloader_persistent_workers:
         # SetEpochCallback only reaches the workers because they are recreated every epoch.
         raise ValueError("dataloader_persistent_workers would repeat the same augmentation every epoch")
 
-    preprocessing = {"padding": args.padding, "narrowband": args.narrowband}
-    train_ds = EoTDataset(source, ids["train"], augment, seed=args.seed, **preprocessing)
-    val_ds = EoTDataset(source, ids["val"], seed=args.seed, **preprocessing)
+    preprocessing = {
+        "narrowband": args.narrowband,
+        "loudness_dbfs": args.loudness_dbfs,
+        "label_column": DATASETS[args.dataset]["label"],
+    }
+    train_ds = EoTDataset(*sets["train"], augment, seed=args.seed, **preprocessing)
+    val_ds = EoTDataset(*sets["val"], seed=args.seed, **preprocessing)
 
     # The front end of the same Whisper as the encoder, sized for the model's window instead of 30 s.
     feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=WINDOW_S)
@@ -154,8 +149,8 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFD
     if model is None:
         model = EoTModel.from_whisper(args.whisper, dropout=args.dropout)
     # Saved with the model, so evaluation and inference preprocess the same way.
-    model.config.padding = args.padding
     model.config.narrowband = args.narrowband
+    model.config.loudness_dbfs = args.loudness_dbfs
     if args.freeze_encoder:
         model.encoder.requires_grad_(False)
 
@@ -173,20 +168,14 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFD
     trainer.train()  # ends with the best epoch loaded (load_best_model_at_end)
 
     # Decision threshold: chosen on val, saved in the model's config
-    val_probs = predict_probs(trainer, val_ds)
+    val_probs = sigmoid(trainer.predict(val_ds).predictions)
     threshold = best_f1_threshold(val_ds.labels, val_probs)
     trainer.model.config.threshold = threshold
     trainer.save_model(str(out / "best"))
 
-    # Final metrics at that threshold: val, and the held-out source for a fold
+    # Final val metrics at that threshold
     val_metrics = eot_metrics(val_ds.labels, val_probs, threshold)
     results = {f"val_at_threshold_{k}": v for k, v in val_metrics.items()}
-
-    if args.fold:
-        heldout_ds = EoTDataset(source, ids["heldout"], seed=args.seed, **preprocessing)
-        heldout_probs = predict_probs(trainer, heldout_ds)
-        heldout_metrics = eot_metrics(heldout_ds.labels, heldout_probs, threshold)
-        results |= {f"heldout_{k}": v for k, v in heldout_metrics.items()}
 
     trainer.log(results)  # also to wandb
     trainer.save_metrics("final", results)

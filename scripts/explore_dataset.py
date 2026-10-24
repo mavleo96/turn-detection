@@ -30,11 +30,13 @@ import pandas as pd
 import soundfile as sf
 from datasets import Features, Value
 
-from turn_detection.data.constants import LANGUAGE, META_COLUMNS, REPOS, RESULTS_DIR, WINDOW_S
+from turn_detection.data.constants import DATASETS, LANGUAGE, META_COLUMNS, RESULTS_DIR, WINDOW_S
 from turn_detection.data.dataset import load_split
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 (after selecting the backend)
+
+REPOS = {split: repo for split, (repo, _) in DATASETS["smart-turn"]["splits"].items()}
 
 FRAME_MS = 20
 SILENCE_DB = -40.0  # trailing silence: frames this far below the clip's loudest frame
@@ -412,8 +414,7 @@ def write_results(df: pd.DataFrame, out: Path) -> None:
         "- **Possible leakage across splits:** `spoken_text` is empty, so complete and truncated versions of the "
         "same sentence cannot be grouped and may land in different splits (train vs val, or train vs test). "
         "Val/test scores may be optimistic.\n"
-        "- **Domain gap:** the data is clean recorded or TTS speech, not phone calls; the leave-one-source-out "
-        "folds hold out human sources to measure generalization to unseen speakers and recording setups.\n"
+        "- **Domain gap:** the data is clean recorded or TTS speech, not phone calls.\n"
         f"- **Trailing silence** is energy-based and relative to each clip's loudest frame ({SILENCE_DB:g} dB, "
         f"{FRAME_MS} ms frames), so noisy recordings read as less silent than clean TTS.\n"
     )

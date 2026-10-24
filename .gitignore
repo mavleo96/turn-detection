@@ -229,3 +229,6 @@ wandb/
 # dataset exploration results and listening samples; tests (kept local)
 results/
 tests/
+
+# temporarily ignore serve directory
+serve/

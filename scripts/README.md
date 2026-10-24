@@ -9,13 +9,13 @@ Model input is the **last 8 s** of 16 kHz mono audio; output is P(turn complete)
 
 | Path | What it holds |
 |---|---|
-| `src/data/` | Everything data: constants and paths (`constants.py`); the Hugging Face dataset, `EoTDataset`, decoding, last-8 s window, feature extractor (`dataset.py`); augmentation with torch-audiomentations (`transforms.py`) |
-| `src/model/` | The model only: `EoTConfig` (`config.py`), attention pooling (`modules.py`), `EoTModel`, a transformers `PreTrainedModel` with the encoder setup and layer weights (`model.py`) |
-| `src/train/` | HF `Trainer` setup (`trainer.py`), metrics with HF `evaluate` (`metrics.py`); `python -m train` |
+| `src/turn_detection/data/` | Everything data: constants and paths (`constants.py`); per-clip audio steps shared with serving: decoding, last-8 s crop, 8 kHz round trip, loudness normalization, padding (`audio.py`); the Hugging Face dataset, `EoTDataset`, `EoTCollator` (`dataset.py`); augmentation with torch-audiomentations (`transforms.py`) |
+| `src/turn_detection/model/` | The model only: `EoTConfig` (`config.py`), attention pooling (`modules.py`), `EoTModel`, a transformers `PreTrainedModel` with the encoder setup and layer weights (`model.py`) |
+| `src/turn_detection/train/` | HF `Trainer` setup (`trainer.py`), metrics with scikit-learn (`metrics.py`); `python -m turn_detection.train` |
 | `scripts/` | One-off runs: explore_dataset, split, samples, run_eval, predict |
 | `tests/` | Tests for all of the above (CPU only, no network: tiny in-memory datasets stand in for the Hub) |
 | `results/` | Whole-dataset exploration (`explore_dataset.py`) and listening samples (`results/samples/`, gitignored) |
-| `artifacts/` | Generated, gitignored: manifests, folds, training runs |
+| `artifacts/` | Generated, gitignored: manifests, training runs |
 
 ## Setup
 
@@ -23,7 +23,7 @@ From the repo root, in the conda env `turn`:
 
 ```bash
 pip install -r requirements.txt
-pip install -e .        # makes data, model, train importable (editable: paths point at this checkout)
+pip install --no-deps -e .   # the turn_detection package (editable: paths point at this checkout)
 wandb login             # once; training logs to Weights & Biases (or pass --report_to none)
 pytest                  # ~20 s
 ```
@@ -32,10 +32,10 @@ pytest                  # ~20 s
 
 ```bash
 python scripts/explore_dataset.py   # downloads both splits into the HF cache; stats -> results/
-python scripts/split.py             # -> artifacts/manifests/, artifacts/folds/
+python scripts/split.py             # -> artifacts/manifests/ (smart-turn train/val/test ids)
 python scripts/samples.py           # -> results/samples/ (WAVs + CSV), for listening
-python -m train                     # -> artifacts/runs/<timestamp>/
-python -m train --fold <source>     # leave-one-source-out (sources: ls artifacts/folds/)
+python -m turn_detection.train                         # TTD -> artifacts/runs/<timestamp>/
+python -m turn_detection.train --dataset smart-turn    # English smart-turn (uses the manifests)
 python scripts/run_eval.py --model artifacts/runs/<run>/best --benchmark
 python scripts/predict.py --model artifacts/runs/<run>/best clip.wav
 ```
@@ -43,9 +43,9 @@ python scripts/predict.py --model artifacts/runs/<run>/best clip.wav
 | Step | Main flags | Disk | Time |
 |---|---|---|---|
 | `explore_dataset` | `--num-proc 16`, `--no-audio` | ~94 GB HF cache (46 GB parquet + `datasets`' Arrow copy), 13 MB results | first run download-bound; from the cache ~2 min |
-| `split` | `--seed`, `--val-frac`, `--subset N`, `--min-stratum`, `--fold-min-clips` | < 10 MB | ~5 s |
+| `split` | `--val-frac` | < 10 MB | ~5 s |
 | `samples` | `--per-bucket 15`, `--seed` | ~50 MB | seconds |
-| `python -m train` | `--fold`, `--max_train_samples`, `--augment false`, `--gain_db`, `--noise_p`, `--freeze_encoder`, plus every `TrainingArguments` flag (`--learning_rate`, `--num_train_epochs`, `--max_steps`, `--report_to`, ...) | ~200 MB per run (2 checkpoints + best) | ~70–80 s per epoch on the RTX 3060, frozen encoder (estimate; data loading is the limit) |
+| `python -m turn_detection.train` | `--dataset ttd\|smart-turn`, `--max_train_samples`, `--augment false`, `--gain_db`, `--noise_p`, `--freeze_encoder`, plus every `TrainingArguments` flag (`--learning_rate`, `--num_train_epochs`, `--max_steps`, `--report_to`, ...) | ~200 MB per run (2 checkpoints + best) | ~70–80 s per epoch on the RTX 3060, frozen encoder (estimate; data loading is the limit) |
 | `run_eval` | `--model`, `--benchmark` | small | ~30 s |
 
 The dataset lives in the Hugging Face cache (`HF_HOME`, default `/workspace/.hf_home`). `/workspace` is
@@ -55,17 +55,16 @@ not a persistent volume on this instance: after a recycle the first step downloa
 
 - **`data.dataset.load_split(split)`** loads a split from the cache in ~2 s (memory-mapped Arrow) with the
   audio left as FLAC bytes (`Audio(decode=False)`; `datasets`' own decoding would need torchcodec).
-- **`scripts/split.py`** reads the English metadata and writes id lists: `test` = the official test split;
-  `train`/`val` = 90/10 of the official train split, stratified by (endpoint_bool, synthetic, dataset),
-  strata under 10 clips go to train; `--subset N` takes an exact-size stratified subsample of train;
-  ids also in test are dropped from train/val. Leave-one-source-out folds: for each human source
-  (mostly `synthetic == False`) with ≥ 300 English train-split clips, `heldout` = its train-split
-  clips, `train`/`val` = the manifests without it. Manifests hold ids + metadata; fold files ids only.
+- **`scripts/split.py`** (smart-turn only; TTD has its own splits) reads the English metadata and writes
+  manifests (ids + metadata): `test` = the official test split; `train`/`val` = the official train split
+  sorted by id, last 10% to val (ids are random UUIDs, so this is a random split independent of the Hub's
+  row order); ids also in test are dropped from train/val.
 - **`data.dataset.EoTDataset(source, ids, augment)`** maps ids to rows of the cached split and, per
   item, decodes the FLAC (soundfile, ~3 ms) to 16 kHz mono, keeps the last 8 s, band-limits it to 4 kHz
-  (`narrowband`: a 16 → 8 → 16 kHz round trip, ~1.5 ms), optionally augments, and only then zero-pads
-  to 8 s (on the left by default), so the noise level follows the audio, not the padding. Items are `{"input_values": waveform, "labels"}`; no
-  preprocessed copies of the audio.
+  (`narrowband`: a 16 → 8 → 16 kHz round trip, ~1.5 ms), normalizes it to −30 dBFS RMS
+  (`loudness_dbfs`; near-silent clips are left alone), optionally augments, and only then zero-pads to 8 s
+  (on the left by default), so the noise level follows the audio, not the padding. Items are
+  `{"input_values": waveform, "labels"}`; no preprocessed copies of the audio.
 - **`data.dataset.EoTCollator(feature_extractor)`** turns a batch of items into the model's inputs,
   `{"input_features": (B, 80, 800), "labels": (B,)}`, with `WhisperFeatureExtractor` (clip by clip:
   its batched path is ~2.4× slower on a CPU worker). The `Trainer` uses it as `data_collator`
@@ -75,11 +74,10 @@ not a persistent volume on this instance: after a recycle the first step downloa
   test: none).
   It draws from torch's global generator, so the dataset seeds it per (seed, epoch, item) inside
   `torch.random.fork_rng()`: reproducible regardless of workers, without touching the caller's RNG.
-- **Evaluation** scores the test manifest's clips with the same preprocessing as training (padding side and
-  `narrowband` come from the model's config), without augmentation.
+- **Evaluation** scores the test clips with the same preprocessing as training (padding side, `narrowband`
+  and `loudness_dbfs` come from the model's config), without augmentation.
 
-Real splits (seed 42): train 59,221 / val 6,581 / test 7,820 English clips; folds `liva_1` (30,922 held
-out), `midcentury_1` (8,489), `human_5` (3,527), `human_convcollector_1` (679).
+Real smart-turn splits: train 59,221 / val 6,581 / test 7,820 English clips.
 
 ## What the other scripts do
 
@@ -89,8 +87,7 @@ out), `midcentury_1` (8,489), `human_5` (3,527), `human_convcollector_1` (679).
   `summary.json`, `tables/*.csv`, `clip_stats.parquet` and plots.
 - **samples**: 15 random English clips per (label × synthetic) bucket, as WAVs at their original rate.
 - **run_eval**: metrics at 0.5 and at the model's val threshold (`config.threshold`), by source and
-  synthetic flag, predicting through `Trainer.predict`; `--benchmark` times batch-1 inference. (Not
-  `evaluate.py`: with `scripts/` on the path it would shadow the Hugging Face `evaluate` package.)
+  synthetic flag, predicting through `Trainer.predict`; `--benchmark` times batch-1 inference.
 - **predict**: `EoTPredictor` (audio of any length and rate → P(turn complete)) and a small CLI.
 
 Everything is deterministic: rows sorted by id, strata visited in sorted order, fixed seeds (default
@@ -123,7 +120,7 @@ waveform (128000,) -> WhisperFeatureExtractor (80, 800) -> [batch] -> Whisper Ti
 
 ## Training
 
-`python -m train` runs the Hugging Face `Trainer` (`src/train/trainer.py`). All settings are fields of
+`python -m turn_detection.train` runs the Hugging Face `Trainer` (`src/turn_detection/train/trainer.py`). All settings are fields of
 `EoTTrainingArguments` (a `TrainingArguments` subclass with this project's defaults plus its model, data
 and augmentation settings), parsed by `HfArgumentParser`, so every setting is logged to Weights & Biases
 (project `turn-detection`) and saved with the run. On top of `Trainer`: a callback that sets the
@@ -138,7 +135,7 @@ stored in `best/config.json`.
 | Precision | bf16 autocast, grad clipping at 1.0 | The RTX 3060 supports bf16; no loss scaling needed |
 | Data loading | 16 workers (`dataloader_num_workers`) | Decode + augment + collate (features): ~1,000 clips/s with 16 workers. With the frozen encoder the GPU could take ~1,350, so data loading is the limit |
 | Loss | BCE with logits, no class weights | Labels are ~50/50 |
-| Preprocessing | last 8 s, 8 kHz round trip (`--narrowband`, default true), zero-padded on the left (`--padding`); both saved in the model's config | The planned SpokenWOZ (8 kHz telephone) + Seamless data must not be separable by bandwidth; evaluation and inference preprocess the same way |
+| Preprocessing | last 8 s, 8 kHz round trip (`--narrowband`, default true), RMS normalized to −30 dBFS (`--loudness_dbfs`), zero-padded on the left (`--padding`); all saved in the model's config | SpokenWOZ (8 kHz phone) and Seamless must not be separable by bandwidth or by level (median RMS −22 vs −46 dBFS; smart-turn −19); evaluation and inference preprocess the same way. After normalization, +6 dB gain clips ~2% of clips (before: 59% of SpokenWOZ, up to 100% of smart-turn sources) |
 | Augmentation | torch-audiomentations: gain ±6 dB, colored noise (white to brown, `f_decay` 0–2) p=0.3 at 20–40 dB SNR, measured against the unpadded clip | Robustness to level and background noise; the clip end is never cut or moved |
 | Model selection | evaluate and save every epoch, keep the best by val ROC AUC (`load_best_model_at_end`); the val threshold maximizing F1 goes into `best/config.json` | Test is never used for tuning |
 
@@ -148,25 +145,24 @@ reached 0.95 in the same smoke run, so a full run will show how much freezing co
 
 Each run directory holds the Trainer's last checkpoints (`checkpoint-<step>/`, with `trainer_state.json`),
 `best/` (`config.json` with the threshold + `model.safetensors`), and `final_results.json` (val metrics
-at the threshold, plus held-out metrics for fold runs). Metrics (HF `evaluate`): accuracy, precision,
-recall, F1, ROC AUC and **false endpoint rate** (incomplete turns predicted complete, i.e. the agent
-would interrupt), from the confusion matrix.
+at the threshold). Metrics (scikit-learn): accuracy, precision, recall, F1, ROC AUC and **false endpoint
+rate** (incomplete turns predicted complete, i.e. the agent would interrupt).
 
 ## Assumptions
 
 - **English only** (`language == "eng"`): 73,622 clips, 67% human recordings, 33% synthetic TTS.
 - **Last-8 s window**: 54% of English clips are longer and get cropped (92% of `liva_1`); shorter ones are
   left-padded with zeros so the clip end always sits at the same position.
-- **16 kHz only**: training and evaluation run on the dataset's 16 kHz audio; no telephone-channel
-  simulation for now.
+- **16 kHz input, telephone band**: all audio is 16 kHz and goes through an 8 kHz round trip
+  (`narrowband`) in training, evaluation and serving.
 - GPU kernels are not forced to be deterministic, so training runs can differ in the last digits.
 
 ## Known limitations
 
 - `spoken_text` is empty, so complete and truncated versions of the same sentence can't be grouped and
   may land in different splits (possible leakage; val/test scores may be optimistic).
-- The data is clean recorded or TTS speech, not phone calls; the leave-one-source-out folds hold out
-  human sources to measure generalization to unseen speakers and recording setups.
+- smart-turn train/val is split per clip: the same speaker or session can be in both (no speaker ids), so
+  smart-turn val scores may be optimistic. TTD's splits share no conversation (Seamless: no person).
 
 ## Differences from the original data-task spec
 

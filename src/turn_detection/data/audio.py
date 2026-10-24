@@ -3,10 +3,12 @@
 Only numpy, soundfile and soxr: serving imports this without the training stack. The order used everywhere:
 
     x, sr = decode(audio_bytes)          # mono float32 at its own rate (resample to 16 kHz if needed)
-    x = crop_window(x)                   # last 8 s, not padded
-    x = narrowband(x)                    # if model.config.narrowband
+    x = prepare_clip(x, use_narrowband, loudness_dbfs)   # last 8 s -> 8 kHz round trip -> loudness, not padded
     ...                                  # (training only: augmentation, see data.transforms)
-    x = pad_window(x, padding)           # zero-pad to exactly 8 s
+    x = pad_window(x)                    # zero-pad on the left to exactly 8 s
+
+The settings come from the model's config (narrowband, loudness_dbfs), so training, evaluation and
+serving preprocess the same way.
 """
 
 import io
@@ -16,6 +18,8 @@ import soundfile as sf
 import soxr
 
 from .constants import SAMPLE_RATE, WINDOW_S
+
+SILENCE_DBFS = -70.0  # clips quieter than this (RMS) are left as they are by normalize_loudness
 
 
 def decode(audio_bytes: bytes) -> tuple[np.ndarray, int]:
@@ -28,7 +32,7 @@ def crop_window(x: np.ndarray) -> np.ndarray:
     """The last 8 s (WINDOW_S) of the clip, or all of it when shorter (not padded: see pad_window)."""
     n = WINDOW_S * SAMPLE_RATE
     x = np.asarray(x, dtype=np.float32)
-    return x[max(len(x) - n, 0) :].copy()
+    return x[max(len(x) - n, 0) :]
 
 
 def narrowband(x: np.ndarray) -> np.ndarray:
@@ -46,14 +50,35 @@ def narrowband(x: np.ndarray) -> np.ndarray:
     return y
 
 
-def pad_window(x: np.ndarray, padding: str = "left") -> np.ndarray:
-    """Zero-pad a cropped clip to 8 s on the `padding` side: "left" keeps the clip end at the window end,
-    "right" keeps the clip start at the window start."""
-    if padding not in ("left", "right"):
-        raise ValueError(f"padding must be 'left' or 'right', got {padding!r}")
+def normalize_loudness(x: np.ndarray, target_dbfs: float = -30.0) -> np.ndarray:
+    """Scale the clip to an RMS level of `target_dbfs`, so loudness can't tell sources (or datasets) apart.
+    Near-silent clips (RMS below SILENCE_DBFS) are left alone; the result is scaled down if it would clip."""
+    if len(x) == 0:
+        return x
 
-    n = WINDOW_S * SAMPLE_RATE
-    zeros = np.zeros(n - len(x), dtype=np.float32)
-    if padding == "left":
-        return np.concatenate([zeros, x])
-    return np.concatenate([x, zeros])
+    rms = np.sqrt(np.mean(np.square(x, dtype=np.float64)))
+    if rms < 10 ** (SILENCE_DBFS / 20):
+        return x
+
+    y = x * (10 ** (target_dbfs / 20) / rms)
+    peak = np.abs(y).max()
+    if peak > 1.0:
+        y = y / peak
+    return y.astype(np.float32)
+
+
+def prepare_clip(x: np.ndarray, use_narrowband: bool = True, loudness_dbfs: float | None = -30.0) -> np.ndarray:
+    """16 kHz clip -> its last 8 s, 8 kHz round trip (if `use_narrowband`), loudness normalized (unless
+    `loudness_dbfs` is None). Not padded: augmentation goes in between, then pad_window."""
+    x = crop_window(x)
+    if use_narrowband:
+        x = narrowband(x)
+    if loudness_dbfs is not None:
+        x = normalize_loudness(x, loudness_dbfs)
+    return x
+
+
+def pad_window(x: np.ndarray) -> np.ndarray:
+    """Zero-pad a cropped clip to 8 s on the left, so the clip end (the pause) is always at the window end."""
+    zeros = np.zeros(WINDOW_S * SAMPLE_RATE - len(x), dtype=np.float32)
+    return np.concatenate([zeros, x])
