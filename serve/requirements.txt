@@ -1,0 +1,15 @@
+# Serving dependencies, pinned (the versions of the training env). torch is installed separately: the CPU
+# wheel in the Dockerfile, preinstalled in the conda env `turn`. Then the turn_detection package (core only):
+#   pip install -r serve/requirements.txt && pip install --no-deps .
+
+numpy==2.5.4
+soundfile==0.14.0
+soxr==1.1.0
+transformers==5.20.2
+
+fastapi==0.161.1
+uvicorn==0.54.0
+
+# Tests
+pytest==9.1.1
+httpx==0.28.1

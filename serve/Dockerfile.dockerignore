@@ -1,0 +1,9 @@
+# Build context is the repo root; the image needs only pyproject.toml, src/ and serve/.
+# (BuildKit reads <Dockerfile>.dockerignore next to the Dockerfile.)
+*
+!pyproject.toml
+!src/
+!serve/
+**/__pycache__
+**/*.egg-info
+serve/tests/
