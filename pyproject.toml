@@ -25,13 +25,11 @@ train = [
     "accelerate>=1.15",
     "datasets>=5.1",
     "evaluate>=0.4.6",
-    "huggingface_hub>=2.2",
     "matplotlib>=3.11",
     "pandas>=3.1",
-    "pyarrow>=26.0",
+    "pyarrow>=26.0",  # pandas.read_parquet (manifests, folds)
     "scikit-learn>=1.9",
     "torch-audiomentations>=0.12",
-    "tqdm>=4.70",
     "wandb>=0.31",
 ]
 
