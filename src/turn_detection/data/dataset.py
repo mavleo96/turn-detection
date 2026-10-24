@@ -9,7 +9,7 @@ decoding would need torchcodec.
     train = EoTDataset(ds, ds["id"], build_augment())
     st = load_split("test")                                         # smart-turn: all languages
     test = EoTDataset(st, manifest["id"], label_column="endpoint_bool")
-    item = train[0]                    # {"input_values": (128000,) float32, "labels": 0. or 1.}
+    item = train[0]                    # {"input_values": (128000,) float32, "labels": bool}
     fe = WhisperFeatureExtractor.from_pretrained("openai/whisper-tiny", chunk_length=8)  # sized for 8 s, not 30 s
     batch = EoTCollator(fe)([train[0], train[1]])         # {"input_features": (2, 80, 800), "labels"}
 
@@ -65,7 +65,7 @@ def rows_for_ids(ds: HFDataset, ids: Sequence[str]) -> np.ndarray:
 
 
 class EoTDataset(Dataset):
-    """{"input_values": (augmented) last 8 s of 16 kHz audio, float32, "labels": float32 (1. = turn complete)}
+    """{"input_values": (augmented) last 8 s of 16 kHz audio, float32, "labels": bool (True = turn complete)}
     for the clips with `ids`; `label_column` holds 1 / True = complete (DATASETS[...]["label"]). Features are
     computed per batch by EoTCollator."""
 
@@ -81,8 +81,7 @@ class EoTDataset(Dataset):
     ):
         self.rows = rows_for_ids(ds, ids)
 
-        complete = np.asarray(ds[label_column], dtype=bool)
-        self.labels = complete[self.rows].astype(np.float32)
+        self.labels = np.asarray(ds[label_column], dtype=bool)[self.rows]
         self.audio = ds.select_columns(["audio"])  # undecoded FLAC bytes
 
         self.augment = augment
@@ -142,5 +141,5 @@ class EoTCollator:
 
         return {
             "input_features": torch.from_numpy(np.stack(features)),  # (B, 80, frames)
-            "labels": torch.tensor(labels, dtype=torch.float32),  # (B,)
+            "labels": torch.tensor(labels),  # (B,) bool; the model casts
         }

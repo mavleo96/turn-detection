@@ -94,7 +94,7 @@ def test_collator_extracts_features_per_batch(hf_splits):
     fe = WhisperFeatureExtractor(chunk_length=WINDOW_S)
     batch = EoTCollator(fe)([ds[0], ds[1], ds[2]])
     assert batch["input_features"].shape == (3, 80, 800) and batch["input_features"].dtype == torch.float32
-    assert batch["labels"].tolist() == [0.0, 1.0, 0.0] and batch["labels"].dtype == torch.float32
+    assert batch["labels"].tolist() == [0.0, 1.0, 0.0] and batch["labels"].dtype == torch.bool
     single = fe(ds[1]["input_values"], sampling_rate=SAMPLE_RATE, return_tensors="np").input_features[0]
     np.testing.assert_allclose(batch["input_features"][1].numpy(), single, atol=1e-5)  # same as one at a time
 

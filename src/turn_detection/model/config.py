@@ -1,11 +1,9 @@
-"""EoTConfig: everything needed to rebuild EoTModel, saved as config.json by save_pretrained."""
-
 from transformers import PretrainedConfig, WhisperConfig
-
-CONV_STRIDE = 2  # WhisperEncoder's conv2 halves the frame rate (hard-coded there, not in WhisperConfig)
 
 
 class EoTConfig(PretrainedConfig):
+    """Encoder, head and preprocessing settings of EoTModel, plus the decision threshold."""
+
     model_type = "eot"
 
     def __init__(
@@ -17,24 +15,23 @@ class EoTConfig(PretrainedConfig):
         threshold: float = 0.5,
         narrowband: bool = True,
         loudness_dbfs: float | None = -30.0,
-        encoder: dict | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.whisper = whisper  # pretrained Whisper the encoder comes from (a Hub id or a local directory)
-        self.input_frames = input_frames  # log-mel frames per input, 10 ms each: 800 = the last 8 s
+        self.whisper = whisper  # Hub id or local directory
+        self.input_frames = input_frames  # 10 ms mel frames: 800 = 8 s
         self.head_hidden = head_hidden
         self.dropout = dropout
-        self.threshold = threshold  # P(complete) >= threshold -> "turn complete"; set from val after training
-        self.narrowband = narrowband  # audio band-limited to 4 kHz (8 kHz round trip) in training; inference must match
-        self.loudness_dbfs = loudness_dbfs  # clips normalized to this RMS level (None: not); inference must match
+        self.threshold = threshold  # set from val after training
+        # Note: preprocessing used in training; evaluation and serving must match
+        self.narrowband = narrowband
+        self.loudness_dbfs = loudness_dbfs
 
-        # The Whisper encoder's config: derived from `whisper` for a new config, the saved one in from_pretrained.
-        if encoder is None:
-            encoder = WhisperConfig.from_pretrained(whisper).to_dict()
-        self.encoder = encoder
+        self.encoder_config = WhisperConfig.from_pretrained(whisper).to_dict()
 
     @property
     def n_positions(self) -> int:
-        """Encoder positions for one input: 800 mel frames -> 400 after the stride-2 conv."""
-        return self.input_frames // CONV_STRIDE
+        """Encoder positions per input: 800 mel frames -> 400."""
+        # Note: WhisperEncoder's conv2 halves the frame rate
+        conv_stride = 2
+        return self.input_frames // conv_stride
