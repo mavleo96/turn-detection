@@ -11,8 +11,8 @@ Which parts train (e.g. a frozen encoder) is decided by the training code, not h
 
 A regular transformers `PreTrainedModel`: `save_pretrained` / `from_pretrained` store EoTConfig (including
 the encoder's config and the decision threshold chosen on val) next to the weights. The features come from
-`WhisperFeatureExtractor` sized for 8 s (data.dataset.make_feature_extractor), which training saves
-into the same directory.
+the same Whisper's `WhisperFeatureExtractor` sized for 8 s (`chunk_length=8`), which training saves into
+the same directory.
 
 Whisper's encoder is built for 30 s (3000 mel frames, 1500 positions). For an 8 s window (800 frames, 400
 positions after the stride-2 conv) it is built with 400 positions, and `from_whisper` copies the pretrained

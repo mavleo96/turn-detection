@@ -21,11 +21,11 @@ import numpy as np
 import pandas as pd
 import torch
 from datasets import Dataset as HFDataset
-from transformers import Trainer, TrainerCallback, TrainingArguments
+from transformers import Trainer, TrainerCallback, TrainingArguments, WhisperFeatureExtractor
 from transformers.trainer_utils import IntervalStrategy, SaveStrategy, SchedulerType
 
-from data.constants import FOLDS_DIR, MANIFESTS_DIR, RUNS_DIR
-from data.dataset import EoTCollator, EoTDataset, load_split, make_feature_extractor
+from data.constants import FOLDS_DIR, MANIFESTS_DIR, RUNS_DIR, WINDOW_S
+from data.dataset import EoTCollator, EoTDataset, load_split
 from data.transforms import AugmentConfig, build_augment
 from model import EoTModel
 
@@ -112,9 +112,10 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFD
     source = load_split("train") if source is None else source
     ids = load_ids(args)
     augment = AugmentConfig(gain_db=args.gain_db, noise_p=args.noise_p) if args.augment else None
-    feature_extractor = make_feature_extractor()
-    train_ds = EoTDataset(source, ids["train"], build_augment(augment), args.seed, args.padding)
-    val_ds = EoTDataset(source, ids["val"], seed=args.seed, pad=args.padding)
+    # The front end of the same Whisper as the encoder, sized for the model's window instead of 30 s.
+    feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=WINDOW_S)
+    train_ds = EoTDataset(source, ids["train"], build_augment(augment), seed=args.seed, padding=args.padding)
+    val_ds = EoTDataset(source, ids["val"], seed=args.seed, padding=args.padding)
 
     if model is None:
         model = EoTModel.from_whisper(args.whisper, dropout=args.dropout)
@@ -140,7 +141,7 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFD
     trainer.save_model(str(out / "best"))
     results = {f"val_at_threshold_{k}": v for k, v in eot_metrics(val_ds.labels, val_probs, threshold).items()}
     if args.fold:
-        heldout_ds = EoTDataset(source, ids["heldout"], seed=args.seed, pad=args.padding)
+        heldout_ds = EoTDataset(source, ids["heldout"], seed=args.seed, padding=args.padding)
         heldout = eot_metrics(heldout_ds.labels, predict_probs(trainer, heldout_ds), threshold)
         results |= {f"heldout_{k}": v for k, v in heldout.items()}
     trainer.log(results)  # also to wandb

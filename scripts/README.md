@@ -101,8 +101,8 @@ waveform (128000,) -> WhisperFeatureExtractor (80, 800) -> [batch] -> Whisper Ti
   -> attention pooling over time (B, 384) -> MLP 384-256-1 -> logit -> sigmoid = P(turn complete)
 ```
 
-- Features come from `WhisperFeatureExtractor` sized for 8 s (`data.dataset.make_feature_extractor`: 80 mel
-  bins, 25 ms window, 10 ms hop → 80 × 800), computed by `EoTCollator` in the DataLoader workers (~3.7 ms
+- Features come from `WhisperFeatureExtractor` sized for 8 s (loaded from `--whisper` with
+  `chunk_length=8`; for Whisper Tiny: 80 mel bins, 25 ms window, 10 ms hop → 80 × 800), computed by `EoTCollator` in the DataLoader workers (~3.7 ms
   per clip on one CPU thread). The `Trainer` saves the extractor with every checkpoint and with `best/`.
 - The pretrained `openai/whisper-tiny` encoder is rebuilt for 8 s: 400 positions instead of 1500,
   keeping the first 400 rows of its fixed sinusoidal position table. 7.9M parameters in total. The

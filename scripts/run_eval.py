@@ -34,7 +34,7 @@ def evaluate_test(
     model: EoTModel, feature_extractor: WhisperFeatureExtractor, source, manifest: pd.DataFrame, args
 ) -> tuple[dict, pd.DataFrame]:
     """Metrics on the test clips; `source` is the HF test split, `manifest` the clips (scripts/split.py)."""
-    dataset = EoTDataset(source, manifest["id"], pad=model.config.padding)
+    dataset = EoTDataset(source, manifest["id"], padding=model.config.padding)
     with tempfile.TemporaryDirectory() as tmp:
         trainer = Trainer(
             model=model,

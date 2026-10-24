@@ -7,7 +7,8 @@ decoding would need torchcodec.
     ds = load_split("train")                                        # all languages, all rows
     train = EoTDataset(ds, manifest["id"], build_augment(AugmentConfig()))
     item = train[0]                    # {"input_values": (128000,) float32, "labels": 0. or 1.}
-    batch = EoTCollator(make_feature_extractor())([train[0], train[1]])   # {"input_features": (2, 80, 800), "labels"}
+    fe = WhisperFeatureExtractor.from_pretrained("openai/whisper-tiny", chunk_length=8)  # sized for 8 s, not 30 s
+    batch = EoTCollator(fe)([train[0], train[1]])         # {"input_features": (2, 80, 800), "labels"}
 
 Each item is decoded (16 kHz mono), cut to the last 8 s (zero-padded when shorter, on the left by default) and
 optionally augmented (see data.transforms); the collator runs `WhisperFeatureExtractor` (sized for 8 s)
@@ -49,37 +50,36 @@ def load_metadata(split: str, ds: HFDataset | None = None) -> pd.DataFrame:
 def rows_for_ids(ds: HFDataset, ids: Sequence[str]) -> np.ndarray:
     """Row numbers of `ids` (in the given order) in `ds`; every id must be present."""
     ids = pd.Series(ids)
-    pos = pd.Series(np.arange(len(ds)), index=pd.Index(ds["id"]))
-    missing = ~ids.isin(pos.index)
+    row_of_id = pd.Series(np.arange(len(ds)), index=pd.Index(ds["id"]))
+
+    missing = ~ids.isin(row_of_id.index)
     if missing.any():
         raise KeyError(f"{int(missing.sum())} ids are not in the dataset, e.g. {ids[missing].iloc[0]}")
-    return pos.loc[ids.to_numpy()].to_numpy()
+
+    return row_of_id.loc[ids.to_numpy()].to_numpy()
 
 
 def decode(audio_bytes: bytes) -> tuple[np.ndarray, int]:
     """Encoded audio (FLAC, WAV, ...) -> mono float32 at its original sample rate."""
-    x, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)
+    x, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)  # (T, channels)
     return x.mean(axis=1), sr
 
 
-def last_window(x: np.ndarray, n: int = WINDOW_S * SAMPLE_RATE, pad: str = "left") -> np.ndarray:
-    """The last `n` samples. Shorter input is zero-padded on the `pad` side: "left" keeps the clip end at
-    the window end, "right" keeps the clip start at the window start."""
-    if pad not in ("left", "right"):
-        raise ValueError(f"pad must be 'left' or 'right', got {pad!r}")
+def last_window(x: np.ndarray, padding: str = "left") -> np.ndarray:
+    """The last 8 s (WINDOW_S). Shorter input is zero-padded on the `padding` side: "left" keeps the clip end
+    at the window end, "right" keeps the clip start at the window start."""
+    if padding not in ("left", "right"):
+        raise ValueError(f"padding must be 'left' or 'right', got {padding!r}")
+
+    n = WINDOW_S * SAMPLE_RATE
     x = np.asarray(x, dtype=np.float32)
     if len(x) >= n:
         return x[len(x) - n :].copy()
+
     zeros = np.zeros(n - len(x), dtype=np.float32)
-    return np.concatenate([zeros, x] if pad == "left" else [x, zeros])
-
-
-def make_feature_extractor(seconds: int = WINDOW_S) -> WhisperFeatureExtractor:
-    """Whisper(-tiny) log-mel front end (80 bins, 25 ms window, 10 ms hop) sized for `seconds` instead
-    of 30 s: features are (80, seconds * 100)."""
-    return WhisperFeatureExtractor(
-        feature_size=80, sampling_rate=SAMPLE_RATE, hop_length=160, chunk_length=seconds, n_fft=400
-    )
+    if padding == "left":
+        return np.concatenate([zeros, x])
+    return np.concatenate([x, zeros])
 
 
 class EoTDataset(Dataset):
@@ -88,18 +88,20 @@ class EoTDataset(Dataset):
 
     def __init__(
         self,
-        source: HFDataset | str,
+        ds: HFDataset,
         ids: Sequence[str],
         augment: Compose | None = None,
         seed: int = 0,
-        pad: str = "left",
+        padding: str = "left",
     ):
-        ds = load_split(source) if isinstance(source, str) else source
         self.rows = rows_for_ids(ds, ids)
-        self.labels = np.asarray(ds["endpoint_bool"], dtype=bool)[self.rows].astype(np.float32)
+
+        endpoint = np.asarray(ds["endpoint_bool"], dtype=bool)
+        self.labels = endpoint[self.rows].astype(np.float32)
         self.audio = ds.select_columns(["audio"])  # undecoded FLAC bytes
+
         self.augment = augment
-        self.pad = pad
+        self.padding = padding
         self.seed = seed
         self.epoch = 0
 
@@ -110,12 +112,16 @@ class EoTDataset(Dataset):
         return len(self.rows)
 
     def __getitem__(self, i: int) -> dict:
-        x, sr = decode(self.audio[int(self.rows[i])]["audio"]["bytes"])
+        row = int(self.rows[i])
+        audio_bytes = self.audio[row]["audio"]["bytes"]
+        x, sr = decode(audio_bytes)
         if sr != SAMPLE_RATE:
-            raise ValueError(f"expected {SAMPLE_RATE} Hz audio, got {sr} Hz (row {self.rows[i]})")
-        x = last_window(x, pad=self.pad)
+            raise ValueError(f"expected {SAMPLE_RATE} Hz audio, got {sr} Hz (row {row})")
+
+        x = last_window(x, padding=self.padding)
         if self.augment is not None:
             x = apply_augment(self.augment, x, (self.seed, self.epoch, i))
+
         return {"input_values": x, "labels": self.labels[i]}
 
 
@@ -128,13 +134,14 @@ class EoTCollator:
     def __call__(self, items: list[dict]) -> dict[str, torch.Tensor]:
         # One clip at a time: on a CPU worker thread the extractor's batched path is ~2.4x slower for
         # 64 clips than 64 single calls (measured), and the results are the same.
-        features = np.stack(
-            [
-                self.feature_extractor(
-                    item["input_values"], sampling_rate=SAMPLE_RATE, return_tensors="np"
-                ).input_features[0]
-                for item in items
-            ]
-        )
-        labels = np.array([item["labels"] for item in items], dtype=np.float32)
-        return {"input_features": torch.from_numpy(features), "labels": torch.from_numpy(labels)}
+        features = []
+        for item in items:
+            out = self.feature_extractor(item["input_values"], sampling_rate=SAMPLE_RATE, return_tensors="np")
+            features.append(out.input_features[0])  # (80, frames)
+
+        labels = [item["labels"] for item in items]
+
+        return {
+            "input_features": torch.from_numpy(np.stack(features)),  # (B, 80, frames)
+            "labels": torch.tensor(labels, dtype=torch.float32),  # (B,)
+        }

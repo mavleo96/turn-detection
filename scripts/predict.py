@@ -34,7 +34,7 @@ class EoTPredictor:
         x = np.asarray(audio, dtype=np.float32)
         if sample_rate != SAMPLE_RATE:
             x = soxr.resample(x, sample_rate, SAMPLE_RATE, quality="HQ").astype(np.float32)
-        window = last_window(x, pad=self.model.config.padding)
+        window = last_window(x, padding=self.model.config.padding)
         features = self.feature_extractor(window, sampling_rate=SAMPLE_RATE, return_tensors="pt")
         features = features.input_features.to(self.device)
         logits = self.model(input_features=features).logits

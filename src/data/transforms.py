@@ -31,8 +31,17 @@ def build_augment(cfg: AugmentConfig | None) -> Compose | None:
     if cfg is None:
         return None
     transforms = []
+
     if cfg.gain_db > 0:  # Gain rejects an empty range
-        transforms.append(Gain(min_gain_in_db=-cfg.gain_db, max_gain_in_db=cfg.gain_db, p=1.0, output_type="dict"))
+        transforms.append(
+            Gain(
+                min_gain_in_db=-cfg.gain_db,
+                max_gain_in_db=cfg.gain_db,
+                p=1.0,
+                output_type="dict",
+            )
+        )
+
     if cfg.noise_p > 0:
         transforms.append(
             AddColoredNoise(  # f_decay 0: white noise
@@ -44,12 +53,19 @@ def build_augment(cfg: AugmentConfig | None) -> Compose | None:
                 output_type="dict",
             )
         )
-    return Compose(transforms, output_type="dict") if transforms else None
+
+    if not transforms:
+        return None
+    return Compose(transforms, output_type="dict")
 
 
 def apply_augment(augment: Compose, x: np.ndarray, seed: tuple[int, ...]) -> np.ndarray:
     """Augment one mono float32 waveform, deterministically for `seed`; output clipped to [-1, 1]."""
+    clip_seed = int(np.random.SeedSequence(seed).generate_state(1)[0])
+    samples = torch.from_numpy(x)[None, None]  # (batch 1, channel 1, T), as torch-audiomentations expects
+
     with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(int(np.random.SeedSequence(seed).generate_state(1)[0]))
-        y = augment(torch.from_numpy(x)[None, None], sample_rate=SAMPLE_RATE).samples[0, 0]
+        torch.manual_seed(clip_seed)
+        y = augment(samples, sample_rate=SAMPLE_RATE).samples[0, 0]  # (T,)
+
     return y.clamp(-1.0, 1.0).numpy()
