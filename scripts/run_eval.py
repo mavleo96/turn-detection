@@ -26,7 +26,7 @@ from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.model import EoTModel
 from turn_detection.train.metrics import breakdown, eot_metrics, sigmoid
 
-REPORT_METRICS = ["accuracy", "precision", "recall", "f1", "false_endpoint_rate", "roc_auc"]
+REPORT_METRICS = ["accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc"]
 BREAKDOWNS = {"ttd": ["source"], "smart-turn": ["source", "synthetic"]}  # per-group metrics in the report
 
 
@@ -177,7 +177,7 @@ def main() -> None:
         results.append(result)
 
         m = result["at_threshold"]
-        scores = f"roc_auc {_fmt(m.get('roc_auc'))} | f1 {m['f1']:.4f} | false endpoints {m['false_endpoint_rate']:.4f}"
+        scores = " | ".join(f"{k} {_fmt(m.get(k))}" for k in REPORT_METRICS)
         print(f"{name} test: {scores}")
 
     bench = []

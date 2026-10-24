@@ -8,7 +8,6 @@ End-of-turn detection for voice-agent pipelines.
 | [`scripts/`](scripts/README.md) | One-off runs: dataset exploration, splits, listening samples, evaluation, prediction |
 | `results/` | Dataset exploration results |
 | `tests/` | Tests for `src/` and `scripts/` |
-| [`serve/`](serve/README.md) | Inference API (FastAPI, dynamic micro-batching) and its CPU Dockerfile |
 | [`demo/`](demo/README.md) | Self-contained demo: live browser mic → streaming ASR + VAD with per-stage latency measurement, split into `frontend/` and `backend/` |
 
 ## Development

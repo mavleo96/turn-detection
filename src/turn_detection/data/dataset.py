@@ -28,7 +28,7 @@ import pandas as pd
 import torch
 from datasets import Audio, load_dataset
 from datasets import Dataset as HFDataset
-from torch.utils.data import Dataset
+from torch.utils.data import ConcatDataset, Dataset
 from torch_audiomentations import Compose
 from transformers import WhisperFeatureExtractor
 
@@ -110,6 +110,18 @@ class EoTDataset(Dataset):
         x = pad_window(x)
 
         return {"input_values": x, "labels": self.labels[i]}
+
+
+class EoTConcat(ConcatDataset):
+    """Several EoTDatasets as one (e.g. ttd + smart-turn), with their labels and the epoch passed through."""
+
+    def __init__(self, datasets: list[EoTDataset]):
+        super().__init__(datasets)
+        self.labels = np.concatenate([d.labels for d in datasets])
+
+    def set_epoch(self, epoch: int) -> None:
+        for d in self.datasets:
+            d.set_epoch(epoch)
 
 
 @dataclass
