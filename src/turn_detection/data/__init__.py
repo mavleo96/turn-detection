@@ -10,9 +10,9 @@ Every clip goes through the same steps; augmentation sits before padding, so the
 
     x = ...                                                    # 16 kHz mono float32, decoded by torchcodec
                                                                # (datasets in EoTDataset, AudioDecoder elsewhere)
-    x = prepare_clip(x, narrowband, loudness_dbfs)             # last 8 s -> 8 kHz round trip -> loudness
+    x = prepare_clip(x, window_s=8, use_narrowband=True, loudness_dbfs=-30.0)  # last 8 s -> 4 kHz band -> level
     x = apply_augment(augment, x, (seed, epoch, item))         # training only
-    x = pad_window(x)                                          # left zero-pad to 8 s
+    x = pad_window(x, window_s=8)                              # left zero-pad to 8 s
 
     train = EoTDataset(load_split("train"), build_augment())
     item = train[0]                                            # {"input_values": (128000,) float32, "labels": bool}
@@ -37,7 +37,10 @@ META_COLUMNS = ["id", "language", "endpoint_bool", "midfiller", "endfiller", "sy
 SEED = 42
 
 SAMPLE_RATE = 16000
-WINDOW_S = 8  # the model sees the last 8 s of each clip
+# Defaults of the preprocessing, used by data, the model config and the trainer (all saved in the model's config)
+WINDOW_S = 8  # the model sees the last 8 s of each clip (EoTConfig.window_s: 2, 4 or 8)
+NARROWBAND = True  # band-limit to 4 kHz (8 kHz round trip)
+LOUDNESS_DBFS = -30.0  # RMS level clips are normalized to (None: not normalized)
 
 _ROOT = Path(__file__).resolve().parents[3]  # the repo root (src/turn_detection/data/__init__.py)
 RUNS_DIR = _ROOT / "artifacts" / "runs"  # artifacts/ is generated and gitignored

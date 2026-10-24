@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from transformers import PreTrainedModel, WhisperConfig, WhisperModel
+from transformers import PreTrainedModel, WhisperModel
 from transformers.modeling_outputs import SequenceClassifierOutput
 from transformers.models.whisper.modeling_whisper import WhisperEncoder
 
@@ -18,13 +18,11 @@ class EoTModel(PreTrainedModel):
     def __init__(self, config: EoTConfig):
         super().__init__(config)
 
-        encoder_config = WhisperConfig.from_dict(config.encoder_config)
-        encoder_config.max_source_positions = config.n_positions
-        self.encoder = WhisperEncoder(encoder_config)
-        dim = encoder_config.d_model
+        self.encoder = WhisperEncoder(config.encoder_config)
+        dim = config.encoder_config.d_model
 
         # Note: one weight per layer, softmax-normalized; the embedding output is excluded
-        self.layer_weights = nn.Parameter(torch.zeros(encoder_config.encoder_layers))
+        self.layer_weights = nn.Parameter(torch.zeros(config.encoder_config.encoder_layers))
 
         self.pool = AttentionPool(dim)
 
@@ -47,7 +45,7 @@ class EoTModel(PreTrainedModel):
             nn.init.zeros_(module.bias)
 
     def forward(self, input_features: torch.Tensor, labels: torch.Tensor | None = None) -> SequenceClassifierOutput:
-        """(B, 80, input_frames) log-mel features -> logits (B,) of P(turn complete); BCE loss with labels."""
+        """(B, 80, 100 * window_s) log-mel features -> logits (B,) of P(turn complete); BCE loss with labels."""
         encoder_out = self.encoder(input_features=input_features, output_hidden_states=True)
         hidden_states = encoder_out.hidden_states[1:]  # L x (B, T, D); [0] is the embedding output
 
@@ -70,11 +68,12 @@ class EoTModel(PreTrainedModel):
     def from_whisper(cls, whisper: str = "openai/whisper-tiny", **config_kwargs) -> "EoTModel":
         """Pretrained encoder of `whisper`, new head."""
         pretrained = WhisperModel.from_pretrained(whisper).get_encoder()
-        config = EoTConfig(whisper=whisper, **config_kwargs)
+        config = EoTConfig(whisper=whisper, encoder_config=pretrained.config.to_dict(), **config_kwargs)
         model = cls(config)
 
         state = pretrained.state_dict()
-        state["embed_positions.weight"] = state["embed_positions.weight"][: config.n_positions]  # first 400 of 1500
+        # Note: the first n_positions rows of the 1500-row (30 s) sinusoidal table
+        state["embed_positions.weight"] = state["embed_positions.weight"][: config.n_positions]
 
         model.encoder.load_state_dict(state)
         return model

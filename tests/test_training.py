@@ -30,8 +30,11 @@ def test_metrics():
 
 
 def training_args(root, **kw) -> EoTTrainingArguments:
+    # Note: a local Whisper dir with the default feature extractor, so train() needs no download
+    WhisperFeatureExtractor().save_pretrained(root / "whisper")
     return EoTTrainingArguments(
         output_dir=str(root / "runs" / "smoke"),
+        whisper=str(root / "whisper"),
         num_train_epochs=2,
         per_device_train_batch_size=8,
         per_device_eval_batch_size=8,
@@ -94,7 +97,7 @@ def test_cli_defaults_and_flags(monkeypatch):
     assert (args.per_device_train_batch_size, args.num_train_epochs, args.lr_scheduler_type) == (64, 5, "cosine")
     assert args.metric_for_best_model == "roc_auc" and args.load_best_model_at_end and args.project == "turn-detection"
     assert args.learning_rate == 1e-3 and args.augment and args.freeze_encoder and args.max_train_samples is None
-    assert args.datasets == ["smart-turn", "ttd"]
+    assert args.datasets == ["smart-turn", "ttd"] and args.window_s == 8
     assert Path(args.output_dir).parent == RUNS_DIR  # artifacts/runs/<timestamp>, not TrainingArguments' default
     argv = [
         "train",
@@ -104,6 +107,8 @@ def test_cli_defaults_and_flags(monkeypatch):
         "100",
         "--datasets",
         "ttd",
+        "--window_s",
+        "2",
         "--gain_db",
         "3",
         "--learning_rate",
@@ -114,6 +119,7 @@ def test_cli_defaults_and_flags(monkeypatch):
     monkeypatch.setattr("sys.argv", argv)
     args = parse_args()
     assert (args.max_train_samples, args.gain_db, args.augment, args.learning_rate) == (100, 3.0, False, 1e-4)
+    assert args.window_s == 2
     assert (
         args.datasets == ["ttd"] and '"max_train_samples": 100' in args.to_json_string()
     )  # what wandb receives as the run config
@@ -123,6 +129,22 @@ def test_persistent_workers_with_augmentation_is_rejected(tmp_path, hub):
     args = training_args(tmp_path, dataloader_persistent_workers=True)
     with pytest.raises(ValueError, match="same augmentation"):
         train(args, model=tiny_model())
+
+
+def test_train_and_evaluate_a_2s_window(tmp_path, hub):
+    args = training_args(tmp_path, window_s=2, max_steps=2, augment=False)
+    run = train(args, model=tiny_model(window_s=2))
+    model = EoTModel.from_pretrained(run / "best")
+    feature_extractor = WhisperFeatureExtractor.from_pretrained(run / "best")
+    assert model.config.window_s == 2 and model.encoder.config.max_source_positions == 100
+    assert feature_extractor.n_samples == 2 * SAMPLE_RATE  # saved with the model, used by run_eval
+    result, _ = evaluate_test(
+        model, feature_extractor, load_split("test"), Namespace(batch_size=4, device="cpu", workers=0, bf16=False)
+    )
+    assert result["n"] == len(load_split("test"))
+
+    with pytest.raises(ValueError, match="built for 8 s"):
+        train(training_args(tmp_path, window_s=2), model=tiny_model())
 
 
 def test_train_on_one_dataset(tmp_path, hub):

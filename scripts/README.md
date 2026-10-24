@@ -5,7 +5,7 @@ End-of-turn (EoT) detector for voice agents: at a pause, is the user's turn comp
 and [`-test`](https://huggingface.co/datasets/pipecat-ai/smart-turn-data-v3.2-test) (CC-BY-4.0), English only,
 plus [`mavleo96/turn-detection-data`](https://huggingface.co/datasets/mavleo96/turn-detection-data) (TTD: SpokenWOZ +
 Seamless Interaction).
-Model input is the **last 8 s** of 16 kHz mono audio; output is P(turn complete).
+Model input is the **last 8 s** (`--window_s`: 2, 4 or 8) of 16 kHz mono audio; output is P(turn complete).
 
 ## Layout
 

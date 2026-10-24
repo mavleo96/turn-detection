@@ -20,7 +20,7 @@ import pandas as pd
 import torch
 from transformers import Trainer, TrainingArguments, WhisperFeatureExtractor
 
-from turn_detection.data import DATASETS, SAMPLE_RATE, WINDOW_S
+from turn_detection.data import DATASETS, SAMPLE_RATE
 from turn_detection.data.audio import pad_window, prepare_clip
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.model import EoTModel
@@ -31,7 +31,8 @@ REPORT_METRICS = ["accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc"]
 
 def evaluate_test(model: EoTModel, feature_extractor: WhisperFeatureExtractor, test, args) -> tuple[dict, pd.DataFrame]:
     """Metrics on `test` (load_split("test")), overall and per source, and the per-clip predictions."""
-    dataset = EoTDataset(test, narrowband=model.config.narrowband, loudness_dbfs=model.config.loudness_dbfs)
+    c = model.config
+    dataset = EoTDataset(test, narrowband=c.narrowband, loudness_dbfs=c.loudness_dbfs, window_s=c.window_s)
     with tempfile.TemporaryDirectory() as tmp:
         trainer = Trainer(
             model=model,
@@ -63,14 +64,17 @@ def evaluate_test(model: EoTModel, feature_extractor: WhisperFeatureExtractor, t
 @torch.no_grad()
 def benchmark(model: EoTModel, feature_extractor: WhisperFeatureExtractor, device: str, runs: int = 100) -> dict:
     """Latency of one decision (batch 1), as a voice agent would call it at every pause: preprocessing and
-    feature extraction of the last 8 s (CPU) + the model on `device`."""
+    feature extraction of the last `window_s` seconds (CPU) + the model on `device`."""
     model = model.to(device).eval()
-    audio = np.zeros(WINDOW_S * SAMPLE_RATE, dtype=np.float32)
+    config = model.config
+    audio = np.zeros(config.window_s * SAMPLE_RATE, dtype=np.float32)
     sync = torch.cuda.synchronize if device.startswith("cuda") else (lambda: None)
 
     def decide():
-        x = prepare_clip(audio, model.config.narrowband, model.config.loudness_dbfs)
-        window = pad_window(x)
+        x = prepare_clip(
+            audio, window_s=config.window_s, use_narrowband=config.narrowband, loudness_dbfs=config.loudness_dbfs
+        )
+        window = pad_window(x, config.window_s)
         features = feature_extractor(window, sampling_rate=SAMPLE_RATE, return_tensors="pt").input_features
         model(input_features=features.to(device))
         sync()

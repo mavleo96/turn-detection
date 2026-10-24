@@ -8,6 +8,7 @@ import torch
 from datasets import Audio, ClassLabel, Dataset, Features, Value
 from transformers import WhisperConfig
 
+from turn_detection.data import WINDOW_S
 from turn_detection.model import EoTConfig, EoTModel
 
 
@@ -113,6 +114,6 @@ def tiny_whisper_config() -> WhisperConfig:
     )
 
 
-def tiny_model(seed: int = 0) -> EoTModel:
+def tiny_model(seed: int = 0, window_s: int = WINDOW_S) -> EoTModel:
     torch.manual_seed(seed)
-    return EoTModel(EoTConfig(encoder=tiny_whisper_config().to_dict()))
+    return EoTModel(EoTConfig(encoder_config=tiny_whisper_config().to_dict(), window_s=window_s))

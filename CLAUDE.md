@@ -1,7 +1,7 @@
 # turn-detection: notes for Claude
 
-End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn complete? Input = the last 8 s of
-16 kHz mono audio, output = P(turn complete). Positive class = complete.
+End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn complete? Input = the last 2, 4 or
+8 s (`window_s`, default 8) of 16 kHz mono audio, output = P(turn complete). Positive class = complete.
 
 ## Working with this user
 - Discuss plans and open questions before writing code; wait for agreement. Exception: "write the code, I'll review".
@@ -16,7 +16,8 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
 - Python env: `/venv/turn` (conda env `turn`, torch 2.14.1+cu130). `/venv/main` has no transformers.
 - Ruff: `/venv/turn/bin/ruff` (requirements-dev.txt, same version as pre-commit, which runs ruff check --fix +
   format). Line length 120.
-- Tests: `/venv/turn/bin/python -m pytest -q` (~50 s, CPU, no network).
+- Tests: `/venv/turn/bin/python -m pytest -q` (~25 s, CPU, no network: they pass with HF_HUB_OFFLINE=1 and an empty
+  HF_HOME).
 - GPU: RTX 4090; 61-CPU cgroup quota (`nproc` says 256), 503 GB RAM; earlier timings were on an RTX 3060.
   `/workspace` is not a volume (lost on recycle).
 - HF cache: `HF_HOME=/workspace/.hf_home`, empty on a fresh instance; needs TTD ~26 GB prepared, smart-turn train
@@ -40,9 +41,10 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
     `ClassLabel(incomplete, complete)`), `EoTDataset` (augments between prepare_clip and padding, so noise SNR
     follows the speech), `EoTCollator` (WhisperFeatureExtractor, 8 s; bool labels).
   - `data/transforms.py` `build_augment(gain_db=6, noise_p=0.3)`: gain ±6 dB + colored noise (white..brown) 20-40 dB.
-  - `model/` `EoTConfig` (whisper name, input_frames 800, head_hidden 64, dropout, threshold, narrowband,
-    loudness_dbfs; encoder config derived from the whisper name and saved), `EoTModel` (frozen-by-trainer Whisper
-    Tiny encoder -> softmax layer weights over 4 layers -> attention pooling -> 384-64-1 MLP).
+  - `model/` `EoTConfig` (whisper name; `encoder_config` = a `WhisperConfig` sub-config with 50 * window_s
+    positions, saved and restored, default = Whisper Tiny's architecture, no download; window_s 2/4/8 -> 100 *
+    window_s mel frames; head_hidden 64, dropout, threshold, narrowband, loudness_dbfs), `EoTModel`
+    (frozen-by-trainer Whisper Tiny encoder -> softmax layer weights over 4 layers -> attention pooling -> MLP).
   - `train/` HF Trainer setup (`trainer.py`), sklearn metrics (`metrics.py`), CLI `python -m turn_detection.train`.
 - `scripts/`: `run_eval.py` (the test split, `--datasets`, per-source breakdown, `--benchmark`) and the exploration
   scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
@@ -53,9 +55,11 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   = `explore_dataset.py` output + `EXPLORE.md`, `ttd_vs_smart_turn/` = `FINDINGS.md`).
 
 ## Training and evaluation
-- `python -m turn_detection.train [--datasets smart-turn ttd]` (default both). 5 epochs, batch 64,
-  AdamW lr 1e-3, wd 0.01, 5% warmup + cosine to 0, grad clip 1.0, bf16, frozen encoder (25k trainable params),
-  best epoch by val ROC AUC, threshold = best F1 on val (saved in `best/config.json`).
+- `python -m turn_detection.train [--datasets smart-turn ttd] [--window_s 2|4|8]` (defaults: both, 8). One run
+  per window; `window_s` is saved in the model config and `best/`'s feature extractor, so run_eval follows it;
+  `EoTCollator` rejects audio of another length. 5 epochs, batch 64, AdamW lr 1e-3, wd 0.01, 5% warmup + cosine
+  to 0, grad clip 1.0, bf16, frozen encoder (25k trainable params), best epoch by val ROC AUC, threshold = best F1
+  on val (saved in `best/config.json`).
 - Splits (`load_split`): train = smart-turn English train without `HOLDOUT`, 90% (random, seed 42) + TTD train
   (52,893 + 333,284); validation = the other 10% + TTD validation (5,877 + 37,600); test = all English smart-turn
   test (holdout sources included: 402 human_5 + 394 rime_2, never seen in train or val) + TTD test (7,820 + 60,574).
@@ -89,15 +93,9 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
 - Re-cut smart-turn clips to VAD-style endings; match the demo VAD to the dataset's.
 
 ## Known issues (deferred)
-- `EoTConfig` ignores a passed or saved encoder config: `encoder_config` is always re-derived with
-  `WhisperConfig.from_pretrained(whisper)` (since 2462223). Loading a checkpoint works only if `whisper` is
-  reachable: it fails offline with an empty HF cache (e.g. a serving container) or when a local Whisper dir is gone.
-  It also breaks 2 tests (`tests/helpers.py` passes `encoder=` for a tiny 2-layer encoder, which is ignored, so the
-  real Whisper Tiny is downloaded). Fix: `encoder_config: dict | None = None` parameter and
-  `self.encoder_config = encoder_config or WhisperConfig.from_pretrained(whisper).to_dict()`; helpers pass
-  `encoder_config=`.
 - The `serve` branch is behind `main`: it imports `turn_detection.data.audio.decode` (removed: decoding is the
-  caller's now) and `turn_detection.data.constants` (now `turn_detection.data`). Serving should decode like training:
+  caller's now) and `turn_detection.data.constants` (now `turn_detection.data`), and calls `prepare_clip` /
+  `pad_window` the old way (settings are keyword-only now, incl. `window_s` from the model config). Serving should decode like training:
   torchcodec `AudioDecoder(..., sample_rate=16000, num_channels=1)` (stereo -> (L + R) / sqrt 2, FFmpeg
   resampling); if torchcodec/FFmpeg can't go in the serving image, serve defines its own decoder
   (soundfile channel mean differs only for stereo, by 3 dB, which loudness normalization removes). All dataset

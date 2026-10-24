@@ -1,25 +1,29 @@
 from transformers import PretrainedConfig, WhisperConfig
 
+from turn_detection.data import LOUDNESS_DBFS, NARROWBAND, WINDOW_S
+
 
 class EoTConfig(PretrainedConfig):
     """Encoder, head and preprocessing settings of EoTModel, plus the decision threshold."""
 
     model_type = "eot"
+    sub_configs = {"encoder_config": WhisperConfig}
 
     def __init__(
         self,
         whisper: str = "openai/whisper-tiny",
-        input_frames: int = 800,
+        encoder_config: dict | None = None,
+        window_s: int = WINDOW_S,
         head_hidden: int = 64,
         dropout: float = 0.1,
         threshold: float = 0.5,
-        narrowband: bool = True,
-        loudness_dbfs: float | None = -30.0,
+        narrowband: bool = NARROWBAND,
+        loudness_dbfs: float | None = LOUDNESS_DBFS,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.whisper = whisper  # Hub id or local directory
-        self.input_frames = input_frames  # 10 ms mel frames: 800 = 8 s
+        self.whisper = whisper  # the pretrained encoder's Hub id or local directory (from_whisper)
+        self.window_s = window_s  # seconds of audio the model sees: 2, 4 or 8
         self.head_hidden = head_hidden
         self.dropout = dropout
         self.threshold = threshold  # set from val after training
@@ -27,13 +31,13 @@ class EoTConfig(PretrainedConfig):
         self.narrowband = narrowband
         self.loudness_dbfs = loudness_dbfs
 
-        # TODO: take the saved/passed encoder config instead of re-deriving it: loading fails offline or when a local
-        # `whisper` dir is gone, and tests/helpers.py's tiny encoder is ignored (see CLAUDE.md, Known issues)
-        self.encoder_config = WhisperConfig.from_pretrained(whisper).to_dict()
+        # Note: the encoder as built, saved in config.json, so loading needs no download; the default
+        # WhisperConfig() is Whisper Tiny's architecture, and from_whisper passes the pretrained one
+        self.encoder_config = WhisperConfig(**(encoder_config or {}))
+        self.encoder_config.max_source_positions = self.n_positions
 
     @property
     def n_positions(self) -> int:
-        """Encoder positions per input: 800 mel frames -> 400."""
-        # Note: WhisperEncoder's conv2 halves the frame rate
-        conv_stride = 2
-        return self.input_frames // conv_stride
+        """Encoder positions per input: 8 s -> 800 mel frames -> 400."""
+        # Note: Whisper's log-mel has 100 frames per second, and WhisperEncoder's conv2 halves that
+        return self.window_s * 100 // 2

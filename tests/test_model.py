@@ -48,8 +48,9 @@ def test_save_pretrained_roundtrip(tmp_path):
     with torch.no_grad():
         torch.testing.assert_close(loaded(input_features=x).logits, model(input_features=x).logits)
     assert loaded.config.threshold == 0.42 and loaded.config.n_positions == 400
+    assert loaded.config.encoder_config.encoder_layers == 2  # the saved encoder, not one fetched for `whisper`
 
 
 def test_config_positions():
-    assert EoTConfig().n_positions == 400
-    assert EoTConfig(input_frames=400).n_positions == 200
+    assert [EoTConfig(window_s=w).n_positions for w in (2, 4, 8)] == [100, 200, 400]
+    assert EoTConfig().window_s == 8

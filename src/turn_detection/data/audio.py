@@ -1,7 +1,7 @@
 import numpy as np
 import soxr
 
-from . import SAMPLE_RATE, WINDOW_S
+from . import LOUDNESS_DBFS, NARROWBAND, SAMPLE_RATE, WINDOW_S
 
 SILENCE_DBFS = -70.0  # clips quieter than this (RMS) are left as they are by normalize_loudness
 
@@ -18,7 +18,7 @@ def narrowband(x: np.ndarray) -> np.ndarray:
     return np.pad(up, (0, len(x) - len(up)))
 
 
-def normalize_loudness(x: np.ndarray, target_dbfs: float = -30.0) -> np.ndarray:
+def normalize_loudness(x: np.ndarray, target_dbfs: float = LOUDNESS_DBFS) -> np.ndarray:
     """Scale the clip to an RMS level of `target_dbfs`; near-silent clips are left alone, loud ones not clipped."""
     if len(x) == 0:
         return x
@@ -36,9 +36,15 @@ def normalize_loudness(x: np.ndarray, target_dbfs: float = -30.0) -> np.ndarray:
     return y.astype(np.float32)
 
 
-def prepare_clip(x: np.ndarray, use_narrowband: bool = True, loudness_dbfs: float | None = -30.0) -> np.ndarray:
-    """16 kHz clip -> its last 8 s, band-limited and loudness normalized (each optional); not padded."""
-    x = np.asarray(x, dtype=np.float32)[-WINDOW_S * SAMPLE_RATE :]
+def prepare_clip(
+    x: np.ndarray,
+    *,
+    window_s: int = WINDOW_S,
+    use_narrowband: bool = NARROWBAND,
+    loudness_dbfs: float | None = LOUDNESS_DBFS,
+) -> np.ndarray:
+    """16 kHz clip -> its last `window_s` seconds, band-limited and loudness normalized (each optional); not padded."""
+    x = np.asarray(x, dtype=np.float32)[-window_s * SAMPLE_RATE :]
     if use_narrowband:
         x = narrowband(x)
     if loudness_dbfs is not None:
@@ -46,7 +52,7 @@ def prepare_clip(x: np.ndarray, use_narrowband: bool = True, loudness_dbfs: floa
     return x
 
 
-def pad_window(x: np.ndarray) -> np.ndarray:
-    """Zero-pad a prepared clip to 8 s on the left, so the clip end (the pause) is always at the window end."""
-    zeros = np.zeros(WINDOW_S * SAMPLE_RATE - len(x), dtype=np.float32)
+def pad_window(x: np.ndarray, window_s: int = WINDOW_S) -> np.ndarray:
+    """Zero-pad a prepared clip to `window_s` seconds on the left, so the clip end (the pause) is at the window end."""
+    zeros = np.zeros(window_s * SAMPLE_RATE - len(x), dtype=np.float32)
     return np.concatenate([zeros, x])

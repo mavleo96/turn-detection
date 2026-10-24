@@ -9,7 +9,7 @@ from turn_detection.data.audio import narrowband, normalize_loudness, pad_window
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.data.transforms import build_augment
 
-from .helpers import fake_hf_split
+from .helpers import fake_hf_split, tiny_model
 
 
 def smart_turn_dataset(ds, rows: list[int], *args, **kwargs) -> EoTDataset:
@@ -76,6 +76,24 @@ def test_dataset_without_augment_is_the_last_window(hf_splits):
     assert not x[: N - 28000].any() and np.abs(x[-28000:-4000]).max() > 0.1
     ds.set_epoch(3)
     assert np.array_equal(ds[0]["input_values"], x)
+
+
+@pytest.mark.parametrize("window_s", [2, 4, 8])
+def test_window_sizes_agree(hf_splits, window_s):
+    # items, features and the model all follow window_s
+    ds = smart_turn_dataset(hf_splits["train"], [1, 2], window_s=window_s)
+    fe = WhisperFeatureExtractor(chunk_length=window_s)
+    batch = EoTCollator(fe)([ds[0], ds[1]])
+    assert ds[0]["input_values"].shape == (window_s * SAMPLE_RATE,)
+    assert batch["input_features"].shape == (2, 80, window_s * 100)
+    assert tiny_model(window_s=window_s)(**batch).logits.shape == (2,)
+
+
+def test_collator_rejects_audio_of_another_window(hf_splits):
+    # the extractor would silently keep the first 2 s of an 8 s window, without the pause at its end
+    ds = smart_turn_dataset(hf_splits["train"], [1])
+    with pytest.raises(ValueError, match="expects 32000"):
+        EoTCollator(WhisperFeatureExtractor(chunk_length=2))([ds[0]])
 
 
 def test_collator_extracts_features_per_batch(hf_splits):

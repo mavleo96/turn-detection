@@ -9,7 +9,20 @@ from torch.utils.data import Dataset
 from torch_audiomentations import Compose
 from transformers import WhisperFeatureExtractor
 
-from . import DATASETS, HOLDOUT, LANGUAGE, SAMPLE_RATE, SEED, SMART_TURN_TEST, SMART_TURN_TRAIN, TTD, VAL_FRAC
+from . import (
+    DATASETS,
+    HOLDOUT,
+    LANGUAGE,
+    LOUDNESS_DBFS,
+    NARROWBAND,
+    SAMPLE_RATE,
+    SEED,
+    SMART_TURN_TEST,
+    SMART_TURN_TRAIN,
+    TTD,
+    VAL_FRAC,
+    WINDOW_S,
+)
 from .audio import pad_window, prepare_clip
 from .transforms import apply_augment
 
@@ -54,15 +67,16 @@ def load_split(split: str, datasets: Sequence[str] = DATASETS, num_proc: int | N
 
 
 class EoTDataset(Dataset):
-    """Clips of a split -> {"input_values": prepared (augmented) 8 s waveform, "labels": True = complete}."""
+    """Clips of a split -> {"input_values": prepared (augmented) `window_s` waveform, "labels": True = complete}."""
 
     def __init__(
         self,
         ds: HFDataset,
         augment: Compose | None = None,
         seed: int = 0,
-        narrowband: bool = True,
-        loudness_dbfs: float | None = -30.0,
+        narrowband: bool = NARROWBAND,
+        loudness_dbfs: float | None = LOUDNESS_DBFS,
+        window_s: int = WINDOW_S,
     ):
         self.labels = np.asarray(ds["label"], dtype=bool)
         self.audio = ds.select_columns(["audio"]).cast_column("audio", AUDIO)
@@ -70,6 +84,7 @@ class EoTDataset(Dataset):
         self.augment = augment
         self.narrowband = narrowband
         self.loudness_dbfs = loudness_dbfs
+        self.window_s = window_s
         self.seed = seed
         self.epoch = 0
 
@@ -82,11 +97,11 @@ class EoTDataset(Dataset):
     def __getitem__(self, i: int) -> dict:
         x = self.audio[i]["audio"].get_all_samples().data[0].numpy()  # (T,)
 
-        x = prepare_clip(x, self.narrowband, self.loudness_dbfs)
+        x = prepare_clip(x, window_s=self.window_s, use_narrowband=self.narrowband, loudness_dbfs=self.loudness_dbfs)
         # Note: augment before padding, so the noise SNR is measured against the speech, not the zeros
         if self.augment is not None:
             x = apply_augment(self.augment, x, (self.seed, self.epoch, i))
-        x = pad_window(x)  # (128000,)
+        x = pad_window(x, self.window_s)  # (16000 * window_s,)
 
         return {"input_values": x, "labels": self.labels[i]}
 
@@ -101,6 +116,10 @@ class EoTCollator:
         # Note: one clip at a time: on a CPU worker the extractor's batched path is ~2.4x slower (measured)
         features = []
         for item in items:
+            # Note: the extractor cuts longer audio to its first n_samples, which would drop the pause at the end
+            n, expected = len(item["input_values"]), self.feature_extractor.n_samples
+            if n != expected:
+                raise ValueError(f"{n} samples, the feature extractor expects {expected}")
             out = self.feature_extractor(item["input_values"], sampling_rate=SAMPLE_RATE, return_tensors="np")
             features.append(out.input_features[0])  # (80, frames)
 

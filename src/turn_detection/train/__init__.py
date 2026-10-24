@@ -2,6 +2,7 @@
 
     python -m turn_detection.train                        # smart-turn + TTD -> artifacts/runs/<timestamp>/
     python -m turn_detection.train --datasets ttd         # TTD only
+    python -m turn_detection.train --window_s 2           # the last 2 s instead of 8 (2, 4 or 8)
     python -m turn_detection.train --max_steps 20 --max_train_samples 512 --report_to none   # quick smoke run
 
 Flags: the fields of EoTTrainingArguments (this project's model / data / augmentation settings) plus every

@@ -8,7 +8,7 @@ import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments, WhisperFeatureExtractor
 from transformers.trainer_utils import IntervalStrategy, SaveStrategy, SchedulerType
 
-from turn_detection.data import DATASETS, RUNS_DIR, WINDOW_S
+from turn_detection.data import DATASETS, LOUDNESS_DBFS, NARROWBAND, RUNS_DIR, WINDOW_S
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.data.transforms import GAIN_DB, NOISE_P, build_augment
 from turn_detection.model import EoTModel
@@ -33,8 +33,9 @@ class EoTTrainingArguments(TrainingArguments):
     max_train_samples: int | None = field(default=None, metadata={"help": "a random N of the training clips"})
 
     # preprocessing (also stored in the saved model's config)
-    narrowband: bool = field(default=True, metadata={"help": "8 kHz round trip: band-limit all audio to 4 kHz"})
-    loudness_dbfs: float | None = field(default=-30.0, metadata={"help": "normalize clips to this RMS level"})
+    narrowband: bool = field(default=NARROWBAND, metadata={"help": "8 kHz round trip: band-limit all audio to 4 kHz"})
+    loudness_dbfs: float | None = field(default=LOUDNESS_DBFS, metadata={"help": "normalize clips to this RMS level"})
+    window_s: int = field(default=WINDOW_S, metadata={"help": "seconds of audio the model sees: 2, 4 or 8"})
 
     # augmentation
     augment: bool = True
@@ -107,16 +108,18 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
         # Note: SetEpochCallback only reaches the workers because they are recreated every epoch
         raise ValueError("dataloader_persistent_workers would repeat the same augmentation every epoch")
 
-    preprocessing = {"narrowband": args.narrowband, "loudness_dbfs": args.loudness_dbfs}
+    preprocessing = {"narrowband": args.narrowband, "loudness_dbfs": args.loudness_dbfs, "window_s": args.window_s}
     train_ds = EoTDataset(train_split, augment, args.seed, **preprocessing)
     val_ds = EoTDataset(load_split("validation", args.datasets), **preprocessing)
 
     # Note: the front end of the same Whisper as the encoder, sized for the model's window instead of 30 s
-    feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=WINDOW_S)
+    feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=args.window_s)
 
     # Model
     if model is None:
-        model = EoTModel.from_whisper(args.whisper, dropout=args.dropout)
+        model = EoTModel.from_whisper(args.whisper, dropout=args.dropout, window_s=args.window_s)
+    if model.config.window_s != args.window_s:
+        raise ValueError(f"the model is built for {model.config.window_s} s windows, --window_s is {args.window_s}")
     # Note: saved with the model, so evaluation and inference preprocess the same way
     model.config.narrowband = args.narrowband
     model.config.loudness_dbfs = args.loudness_dbfs
