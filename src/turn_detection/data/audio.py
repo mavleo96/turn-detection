@@ -6,7 +6,7 @@ from . import LOUDNESS_DBFS, NARROWBAND, SAMPLE_RATE, WINDOW_S
 SILENCE_DBFS = -70.0  # clips quieter than this (RMS) are left as they are by normalize_loudness
 
 
-def narrowband(x: np.ndarray) -> np.ndarray:
+def band_limit(x: np.ndarray) -> np.ndarray:
     """Telephone bandwidth: a 16 kHz -> 8 kHz -> 16 kHz round trip, which removes everything above 4 kHz."""
     if len(x) == 0:
         return x
@@ -40,13 +40,13 @@ def prepare_clip(
     x: np.ndarray,
     *,
     window_s: int = WINDOW_S,
-    use_narrowband: bool = NARROWBAND,
+    narrowband: bool = NARROWBAND,
     loudness_dbfs: float | None = LOUDNESS_DBFS,
 ) -> np.ndarray:
     """16 kHz clip -> its last `window_s` seconds, band-limited and loudness normalized (each optional); not padded."""
     x = np.asarray(x, dtype=np.float32)[-window_s * SAMPLE_RATE :]
-    if use_narrowband:
-        x = narrowband(x)
+    if narrowband:
+        x = band_limit(x)
     if loudness_dbfs is not None:
         x = normalize_loudness(x, loudness_dbfs)
     return x

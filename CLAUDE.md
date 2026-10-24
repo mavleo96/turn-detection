@@ -33,13 +33,16 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
 - `src/turn_detection/` (installed with `pip install --no-deps -e .`):
   - `data/__init__.py` constants and paths: repos `SMART_TURN_TRAIN` / `SMART_TURN_TEST` (pipecat-ai v3.2, one
     split "train" each) and `TTD` (`mavleo96/turn-detection-data`), `DATASETS` (`smart-turn`, `ttd`), `HOLDOUT`
-    (`human_5`, `rime_2`), `VAL_FRAC`.
-  - `data/audio.py` per-clip steps shared by training, eval and serving: `prepare_clip` (last 8 s ->
-    `narrowband` 16k->8k->16k -> `normalize_loudness` to -30 dBFS RMS), `pad_window` (left zero-pad to 8 s).
+    (`human_5`, `rime_2`), `VAL_FRAC`, and the only preprocessing defaults: `WINDOW_S` 8, `NARROWBAND` True,
+    `LOUDNESS_DBFS` -30.
+  - `data/audio.py` per-clip steps shared by training, eval and serving: `prepare_clip(x, *, window_s, narrowband,
+    loudness_dbfs)` (last `window_s` s -> `band_limit` 16k->8k->16k -> `normalize_loudness` to -30 dBFS RMS),
+    `pad_window(x, window_s)` (left zero-pad).
   - `data/dataset.py` `load_split(split, datasets)` (train / validation / test of smart-turn and/or TTD as `id,
     audio, dataset, label`; audio `AUDIO` = 16 kHz mono, decoded by `datasets`/torchcodec; label
     `ClassLabel(incomplete, complete)`), `EoTDataset` (augments between prepare_clip and padding, so noise SNR
-    follows the speech), `EoTCollator` (WhisperFeatureExtractor, 8 s; bool labels).
+    follows the speech), `EoTCollator` (WhisperFeatureExtractor sized for the window; rejects other lengths; bool
+    labels).
   - `data/transforms.py` `build_augment(gain_db=6, noise_p=0.3)`: gain ±6 dB + colored noise (white..brown) 20-40 dB.
   - `model/` `EoTConfig` (whisper name; `encoder_config` = a `WhisperConfig` sub-config with 50 * window_s
     positions, saved and restored, default = Whisper Tiny's architecture, no download; window_s 2/4/8 -> 100 *
@@ -95,8 +98,8 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
 ## Known issues (deferred)
 - The `serve` branch is behind `main`: it imports `turn_detection.data.audio.decode` (removed: decoding is the
   caller's now) and `turn_detection.data.constants` (now `turn_detection.data`), and calls `prepare_clip` /
-  `pad_window` the old way (settings are keyword-only now, incl. `window_s` from the model config). Serving should decode like training:
-  torchcodec `AudioDecoder(..., sample_rate=16000, num_channels=1)` (stereo -> (L + R) / sqrt 2, FFmpeg
-  resampling); if torchcodec/FFmpeg can't go in the serving image, serve defines its own decoder
+  `pad_window` the old way (settings are keyword-only now, incl. `window_s` from the model config). Serving should
+  decode like training: torchcodec `AudioDecoder(..., sample_rate=16000, num_channels=1)` (stereo -> (L + R) /
+  sqrt 2, FFmpeg resampling); if torchcodec/FFmpeg can't go in the serving image, serve defines its own decoder
   (soundfile channel mean differs only for stereo, by 3 dB, which loudness normalization removes). All dataset
   clips are 16 kHz mono (smart-turn: `explore_dataset.py`, all 302,473; TTD: 600 sampled).

@@ -5,7 +5,7 @@ from datasets import Dataset
 from transformers import WhisperFeatureExtractor
 
 from turn_detection.data import HOLDOUT, LANGUAGE, SAMPLE_RATE, SEED, VAL_FRAC, WINDOW_S
-from turn_detection.data.audio import narrowband, normalize_loudness, pad_window, prepare_clip
+from turn_detection.data.audio import band_limit, normalize_loudness, pad_window, prepare_clip
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.data.transforms import build_augment
 
@@ -21,7 +21,7 @@ N = WINDOW_S * SAMPLE_RATE
 
 
 def crop(x: np.ndarray) -> np.ndarray:
-    return prepare_clip(x, use_narrowband=False, loudness_dbfs=None)
+    return prepare_clip(x, narrowband=False, loudness_dbfs=None)
 
 
 def window(x: np.ndarray) -> np.ndarray:
@@ -45,11 +45,11 @@ def test_narrowband_removes_content_above_4khz():
     low = np.sin(2 * np.pi * 1000 * t).astype(np.float32)
     high = np.sin(2 * np.pi * 6000 * t).astype(np.float32)
     for x in (low, high, low[:-1]):  # also an odd length
-        assert narrowband(x).shape == x.shape and narrowband(x).dtype == np.float32
+        assert band_limit(x).shape == x.shape and band_limit(x).dtype == np.float32
     middle = slice(1000, -1000)  # away from the resampler's edges
-    assert np.abs(narrowband(low)[middle] - low[middle]).max() < 0.01
-    assert np.abs(narrowband(high)[middle]).max() < 0.01
-    assert narrowband(np.zeros(0, dtype=np.float32)).shape == (0,)
+    assert np.abs(band_limit(low)[middle] - low[middle]).max() < 0.01
+    assert np.abs(band_limit(high)[middle]).max() < 0.01
+    assert band_limit(np.zeros(0, dtype=np.float32)).shape == (0,)
 
 
 def test_feature_extractor_is_sized_for_the_window():

@@ -97,7 +97,7 @@ class EoTDataset(Dataset):
     def __getitem__(self, i: int) -> dict:
         x = self.audio[i]["audio"].get_all_samples().data[0].numpy()  # (T,)
 
-        x = prepare_clip(x, window_s=self.window_s, use_narrowband=self.narrowband, loudness_dbfs=self.loudness_dbfs)
+        x = prepare_clip(x, window_s=self.window_s, narrowband=self.narrowband, loudness_dbfs=self.loudness_dbfs)
         # Note: augment before padding, so the noise SNR is measured against the speech, not the zeros
         if self.augment is not None:
             x = apply_augment(self.augment, x, (self.seed, self.epoch, i))

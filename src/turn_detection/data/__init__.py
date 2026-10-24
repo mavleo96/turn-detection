@@ -10,7 +10,7 @@ Every clip goes through the same steps; augmentation sits before padding, so the
 
     x = ...                                                    # 16 kHz mono float32, decoded by torchcodec
                                                                # (datasets in EoTDataset, AudioDecoder elsewhere)
-    x = prepare_clip(x, window_s=8, use_narrowband=True, loudness_dbfs=-30.0)  # last 8 s -> 4 kHz band -> level
+    x = prepare_clip(x, window_s=8, narrowband=True, loudness_dbfs=-30.0)  # last 8 s -> 4 kHz band -> level
     x = apply_augment(augment, x, (seed, epoch, item))         # training only
     x = pad_window(x, window_s=8)                              # left zero-pad to 8 s
 

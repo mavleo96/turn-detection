@@ -31,8 +31,10 @@ REPORT_METRICS = ["accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc"]
 
 def evaluate_test(model: EoTModel, feature_extractor: WhisperFeatureExtractor, test, args) -> tuple[dict, pd.DataFrame]:
     """Metrics on `test` (load_split("test")), overall and per source, and the per-clip predictions."""
-    c = model.config
-    dataset = EoTDataset(test, narrowband=c.narrowband, loudness_dbfs=c.loudness_dbfs, window_s=c.window_s)
+    config = model.config
+    dataset = EoTDataset(
+        test, narrowband=config.narrowband, loudness_dbfs=config.loudness_dbfs, window_s=config.window_s
+    )
     with tempfile.TemporaryDirectory() as tmp:
         trainer = Trainer(
             model=model,
@@ -67,12 +69,13 @@ def benchmark(model: EoTModel, feature_extractor: WhisperFeatureExtractor, devic
     feature extraction of the last `window_s` seconds (CPU) + the model on `device`."""
     model = model.to(device).eval()
     config = model.config
-    audio = np.zeros(config.window_s * SAMPLE_RATE, dtype=np.float32)
+    # Note: low-level noise, not silence: normalize_loudness leaves near-silent clips alone and would be skipped
+    audio = 0.01 * np.random.default_rng(0).standard_normal(config.window_s * SAMPLE_RATE).astype(np.float32)
     sync = torch.cuda.synchronize if device.startswith("cuda") else (lambda: None)
 
     def decide():
         x = prepare_clip(
-            audio, window_s=config.window_s, use_narrowband=config.narrowband, loudness_dbfs=config.loudness_dbfs
+            audio, window_s=config.window_s, narrowband=config.narrowband, loudness_dbfs=config.loudness_dbfs
         )
         window = pad_window(x, config.window_s)
         features = feature_extractor(window, sampling_rate=SAMPLE_RATE, return_tensors="pt").input_features
