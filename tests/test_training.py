@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import torch
-from transformers import EvalPrediction, WhisperFeatureExtractor
+from transformers import WhisperFeatureExtractor
 
 from predict import EoTPredictor
 from predict import main as predict_main
@@ -14,7 +14,7 @@ from run_eval import evaluate_test
 from turn_detection.data import SAMPLE_RATE, WINDOW_S
 from turn_detection.data.dataset import load_split
 from turn_detection.model import EoTModel
-from turn_detection.train.metrics import best_f1_threshold, compute_metrics, eot_metrics
+from turn_detection.train.metrics import best_f1_threshold, eot_metrics
 from turn_detection.train.trainer import EoTTrainingArguments, train
 
 from .helpers import tiny_model
@@ -28,8 +28,6 @@ def test_metrics():
     assert m["f1"] == pytest.approx(0.8) and m["pr_auc"] == pytest.approx(5 / 6) and m["threshold"] == 0.5
     assert set(m) == {"threshold", "accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc"}
     assert "roc_auc" not in eot_metrics(np.array([1, 1]), np.array([0.9, 0.2]))  # undefined with one class
-    logits = np.log(probs / (1 - probs))
-    assert compute_metrics(EvalPrediction(predictions=logits, label_ids=labels)) == pytest.approx(m)
     assert best_f1_threshold(labels, np.array([0.9, 0.8, 0.2, 0.1])) == 0.8
 
 

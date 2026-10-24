@@ -1,23 +1,9 @@
-"""Training with the Hugging Face `Trainer`: argument dataclasses, dataset setup and the run itself.
-
-Inputs (data.dataset.load_split of `datasets`, from the Hugging Face cache): the train split (smart-turn English
-without the holdout sources and/or ttd) and the validation split for model selection and the threshold.
-
-What is ours on top of `Trainer`: freezing the Whisper encoder (`freeze_encoder`, default on: the
-Trainer's default AdamW then only gets the layer weights, pooling and MLP), a callback that tells the
-dataset the epoch (so augmentation differs per epoch), and, after training, the decision threshold
-chosen on val, stored in the saved model's config.
-
-A run directory holds the Trainer's checkpoints, `best/` (the best epoch by val ROC AUC: model with
-the threshold in its config, plus the feature extractor, both via save_pretrained), and
-`final_results.json`; metrics also go to Weights & Biases.
-"""
-
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments, WhisperFeatureExtractor
 from transformers.trainer_utils import IntervalStrategy, SaveStrategy, SchedulerType
@@ -27,14 +13,13 @@ from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.data.transforms import GAIN_DB, NOISE_P, build_augment
 from turn_detection.model import EoTModel
 
-from .metrics import best_f1_threshold, compute_metrics, eot_metrics, sigmoid
+from .metrics import best_f1_threshold, eot_metrics
 
 
 @dataclass
 class EoTTrainingArguments(TrainingArguments):
-    """TrainingArguments with this project's defaults plus its model / data / augmentation settings, so
-    every setting is logged to wandb and saved with the run (training_args.bin). Overridden fields keep
-    the base class's annotations, which HfArgumentParser relies on; every Trainer flag still works."""
+    """TrainingArguments with this project's defaults and its model / data / augmentation settings, all logged to W&B
+    and saved with the run (training_args.bin)."""
 
     # model (also stored in the saved model's config)
     whisper: str = field(default="openai/whisper-tiny", metadata={"help": "pretrained Whisper for the encoder"})
@@ -57,6 +42,7 @@ class EoTTrainingArguments(TrainingArguments):
     noise_p: float = NOISE_P
 
     # Trainer defaults for this project
+    # Note: overridden fields keep the base class's annotations, which HfArgumentParser relies on
     output_dir: str | None = field(default=None, metadata={"help": "default: artifacts/runs/<timestamp>"})
     num_train_epochs: float = 5
     per_device_train_batch_size: int = 64
@@ -65,7 +51,8 @@ class EoTTrainingArguments(TrainingArguments):
     # (RandomSampler), evaluation and predict keep the order (run_eval matches predictions to ids by position), and
     # augmentation is seeded by the item index, not its position in the batch
     train_sampling_strategy: str = "random"
-    learning_rate: float = 1e-3  # for the head; use a much lower LR with --freeze_encoder false
+    # Note: for the head; use a much lower LR with --freeze_encoder false
+    learning_rate: float = 1e-3
     weight_decay: float = 0.01
     lr_scheduler_type: SchedulerType | str = "cosine"
     warmup_steps: float = 0.05
@@ -76,10 +63,12 @@ class EoTTrainingArguments(TrainingArguments):
     load_best_model_at_end: bool = True
     metric_for_best_model: str | None = "roc_auc"
     logging_steps: float = 50
-    dataloader_num_workers: int = 16  # ~1,200 clips/s of decode + augment + features (GPU needs ~520)
+    # Note: ~1,200 clips/s of decode + augment + features with 16 (the GPU needs ~520; RTX 3060)
+    dataloader_num_workers: int = 16
     report_to: None | str | list[str] = "wandb"
-    remove_unused_columns: bool = False  # items carry "input_values" (waveforms) for the collator, not forward()
-    project: str = "turn-detection"  # W&B project (set as WANDB_PROJECT in train(); Trackio reads it directly)
+    # Note: items carry "input_values" (waveforms) for the collator, not forward()
+    remove_unused_columns: bool = False
+    project: str = "turn-detection"  # W&B project
 
 
 class SetEpochCallback(TrainerCallback):
@@ -93,12 +82,13 @@ class SetEpochCallback(TrainerCallback):
 
 
 def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
-    """Train, pick the val threshold, save `best/`; returns the run directory. `model` can be injected (tests);
+    """Train, pick the validation threshold, save `best/`; returns the run directory. `model`: injected by tests,
     by default a new model on the pretrained `whisper` encoder."""
     if args.output_dir is None:
         args.output_dir = str(RUNS_DIR / datetime.now().strftime("%Y%m%d-%H%M%S"))
     args.run_name = args.run_name or Path(args.output_dir).name
-    os.environ.setdefault("WANDB_PROJECT", args.project)  # the W&B callback ignores args.project
+    # Note: the W&B callback ignores args.project and reads WANDB_PROJECT
+    os.environ.setdefault("WANDB_PROJECT", args.project)
     out = Path(args.output_dir)
 
     # Data
@@ -112,20 +102,20 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
     if args.augment:
         augment = build_augment(args.gain_db, args.noise_p)
     if augment is not None and args.dataloader_persistent_workers:
-        # SetEpochCallback only reaches the workers because they are recreated every epoch.
+        # Note: SetEpochCallback only reaches the workers because they are recreated every epoch
         raise ValueError("dataloader_persistent_workers would repeat the same augmentation every epoch")
 
     preprocessing = {"narrowband": args.narrowband, "loudness_dbfs": args.loudness_dbfs}
     train_ds = EoTDataset(train_split, augment, args.seed, **preprocessing)
     val_ds = EoTDataset(load_split("validation", args.datasets), **preprocessing)
 
-    # The front end of the same Whisper as the encoder, sized for the model's window instead of 30 s.
+    # Note: the front end of the same Whisper as the encoder, sized for the model's window instead of 30 s
     feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=WINDOW_S)
 
     # Model
     if model is None:
         model = EoTModel.from_whisper(args.whisper, dropout=args.dropout)
-    # Saved with the model, so evaluation and inference preprocess the same way.
+    # Note: saved with the model, so evaluation and inference preprocess the same way
     model.config.narrowband = args.narrowband
     model.config.loudness_dbfs = args.loudness_dbfs
     if args.freeze_encoder:
@@ -139,13 +129,15 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
         eval_dataset=val_ds,
         data_collator=EoTCollator(feature_extractor),  # waveforms -> log-mel features, per batch
         processing_class=feature_extractor,  # saved with every checkpoint and with best/
-        compute_metrics=compute_metrics,
+        # Note: logits -> P(complete), clipped so exp can't overflow in float32; metrics at threshold 0.5
+        compute_metrics=lambda p: eot_metrics(p.label_ids, 1 / (1 + np.exp(-np.clip(p.predictions, -80, 80)))),
         callbacks=[SetEpochCallback(train_ds)],
     )
     trainer.train()  # ends with the best epoch loaded (load_best_model_at_end)
 
     # Decision threshold: chosen on val, saved in the model's config
-    val_probs = sigmoid(trainer.predict(val_ds).predictions)
+    val_logits = trainer.predict(val_ds).predictions  # (N,)
+    val_probs = 1 / (1 + np.exp(-np.clip(val_logits, -80, 80)))
     threshold = best_f1_threshold(val_ds.labels, val_probs)
     trainer.model.config.threshold = threshold
     trainer.save_model(str(out / "best"))

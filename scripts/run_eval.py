@@ -24,7 +24,7 @@ from turn_detection.data import DATASETS, SAMPLE_RATE, WINDOW_S
 from turn_detection.data.audio import pad_window, prepare_clip
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.model import EoTModel
-from turn_detection.train.metrics import breakdown, eot_metrics, sigmoid
+from turn_detection.train.metrics import breakdown, eot_metrics
 
 REPORT_METRICS = ["accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc"]
 
@@ -46,7 +46,8 @@ def evaluate_test(model: EoTModel, feature_extractor: WhisperFeatureExtractor, t
             ),
             data_collator=EoTCollator(feature_extractor),
         )
-        probs = sigmoid(trainer.predict(dataset).predictions)
+        logits = trainer.predict(dataset).predictions  # (N,)
+        probs = 1 / (1 + np.exp(-np.clip(logits, -80, 80)))  # clipped so exp can't overflow in float32
     threshold = model.config.threshold
     preds = test.select_columns(["id", "dataset"]).to_pandas().assign(label=dataset.labels.astype(int), prob=probs)
 
