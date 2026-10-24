@@ -1,9 +1,6 @@
 """The scripts end to end on tiny in-memory splits (no network)."""
 
-import json
-
 import numpy as np
-import pandas as pd
 
 from explore_dataset import load_all, trailing_silence, write_results
 from samples import export_samples
@@ -15,16 +12,6 @@ def test_trailing_silence():
     assert trailing_silence(np.concatenate([speech, np.zeros(sr // 2)]), sr) == 0.5
     assert trailing_silence(speech, sr) == 0.0
     assert trailing_silence(np.zeros(sr), sr) == 1.0
-
-
-def test_split_outputs(artifacts):
-    manifests = artifacts / "manifests"
-    train, val, test = (pd.read_parquet(manifests / f"{n}.parquet") for n in ("train", "val", "test"))
-    assert len(train) + len(val) == 64 and len(test) == 24
-    assert not set(train["id"]) & set(val["id"]) and not set(train["id"]) & set(test["id"])
-    assert list(train.columns) == ["id", "endpoint_bool", "synthetic", "midfiller", "endfiller", "dataset"]
-    summary = json.loads((manifests / "split_summary.json").read_text())
-    assert {name: s["clips"] for name, s in summary.items()} == {"train": len(train), "val": len(val), "test": 24}
 
 
 def test_explore_end_to_end(hf_splits, tmp_path):

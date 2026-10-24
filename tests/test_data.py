@@ -1,34 +1,40 @@
 import numpy as np
 import pytest
 import torch
+from datasets import Dataset
 from transformers import WhisperFeatureExtractor
 
-from turn_detection.data.audio import crop_window, decode, narrowband, normalize_loudness, pad_window
-from turn_detection.data.constants import LANGUAGE, SAMPLE_RATE, WINDOW_S
-from turn_detection.data.dataset import EoTCollator, EoTDataset, load_metadata, load_split, rows_for_ids
+from turn_detection.data import HOLDOUT, LANGUAGE, SAMPLE_RATE, SEED, VAL_FRAC, WINDOW_S
+from turn_detection.data.audio import narrowband, normalize_loudness, pad_window, prepare_clip
+from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.data.transforms import build_augment
 
-from .helpers import fake_hf_split, flac_bytes
+from .helpers import fake_hf_split
 
 
-def smart_turn_dataset(*args, **kwargs) -> EoTDataset:
-    return EoTDataset(*args, label_column="endpoint_bool", **kwargs)
+def smart_turn_dataset(ds, rows: list[int], *args, **kwargs) -> EoTDataset:
+    """EoTDataset on `rows` of a raw fake smart-turn split, endpoint_bool as the label."""
+    return EoTDataset(ds.select(rows).rename_column("endpoint_bool", "label"), *args, **kwargs)
 
 
 N = WINDOW_S * SAMPLE_RATE
 
 
+def crop(x: np.ndarray) -> np.ndarray:
+    return prepare_clip(x, use_narrowband=False, loudness_dbfs=None)
+
+
 def window(x: np.ndarray) -> np.ndarray:
-    return pad_window(crop_window(x))
+    return pad_window(crop(x))
 
 
 def test_crop_and_pad_window():
     x = np.arange(N + 5000, dtype=np.float32)
-    np.testing.assert_array_equal(crop_window(x), x[-N:])
+    np.testing.assert_array_equal(crop(x), x[-N:])
     np.testing.assert_array_equal(window(x), x[-N:])
     short = window(np.ones(1000, dtype=np.float32))
     assert short.shape == (N,) and not short[:-1000].any() and (short[-1000:] == 1).all()
-    assert crop_window(np.ones(1000, dtype=np.float32)).shape == (1000,)  # crop never pads
+    assert crop(np.ones(1000, dtype=np.float32)).shape == (1000,)  # crop never pads
     exact = np.random.default_rng(0).standard_normal(N).astype(np.float32)
     np.testing.assert_array_equal(window(exact), exact)
     assert not window(np.zeros(0, dtype=np.float32)).any()
@@ -46,31 +52,14 @@ def test_narrowband_removes_content_above_4khz():
     assert narrowband(np.zeros(0, dtype=np.float32)).shape == (0,)
 
 
-def test_decode_downmixes_to_mono():
-    t = np.arange(SAMPLE_RATE) / SAMPLE_RATE
-    stereo = np.stack([np.sin(2 * np.pi * 440 * t), np.zeros_like(t)], axis=1) * 0.5
-    x, sr = decode(flac_bytes(stereo, SAMPLE_RATE))
-    assert sr == SAMPLE_RATE and x.shape == (SAMPLE_RATE,) and x.dtype == np.float32
-    assert 0.2 < np.abs(x).max() < 0.3  # mean of the two channels
-
-
 def test_feature_extractor_is_sized_for_the_window():
     fe = WhisperFeatureExtractor(chunk_length=WINDOW_S)
     feats = fe(np.zeros(N, dtype=np.float32), sampling_rate=SAMPLE_RATE, return_tensors="np").input_features
     assert feats.shape == (1, 80, 800) and fe.n_samples == N
 
 
-def test_load_metadata_english_sorted(hf_splits):
-    meta = load_metadata("train")
-    assert (meta["language"] == LANGUAGE).all() and len(meta) == 64 and meta["id"].is_monotonic_increasing
-
-
-def test_rows_for_ids_and_dataset_items(hf_splits):
-    source = hf_splits["train"]
-    assert rows_for_ids(source, ["train-005", "train-002"]).tolist() == [5, 2]
-    with pytest.raises(KeyError):
-        rows_for_ids(source, ["nope"])
-    ds = smart_turn_dataset(source, ["train-005", "train-002"], build_augment(noise_p=1.0), seed=0)
+def test_dataset_items(hf_splits):
+    ds = smart_turn_dataset(hf_splits["train"], [5, 2], build_augment(noise_p=1.0), seed=0)
     assert ds.labels.tolist() == [0.0, 1.0]  # endpoint_bool = (i % 2 == 0)
     item = ds[1]
     x = item["input_values"]
@@ -82,7 +71,7 @@ def test_rows_for_ids_and_dataset_items(hf_splits):
 
 def test_dataset_without_augment_is_the_last_window(hf_splits):
     # train-001: 1.5 s of speech + 250 ms of silence, left-padded to 8 s
-    ds = smart_turn_dataset(hf_splits["train"], ["train-001"])
+    ds = smart_turn_dataset(hf_splits["train"], [1])
     x = ds[0]["input_values"]
     assert not x[: N - 28000].any() and np.abs(x[-28000:-4000]).max() > 0.1
     ds.set_epoch(3)
@@ -90,7 +79,7 @@ def test_dataset_without_augment_is_the_last_window(hf_splits):
 
 
 def test_collator_extracts_features_per_batch(hf_splits):
-    ds = smart_turn_dataset(hf_splits["train"], ["train-001", "train-002", "train-003"])
+    ds = smart_turn_dataset(hf_splits["train"], [1, 2, 3])
     fe = WhisperFeatureExtractor(chunk_length=WINDOW_S)
     batch = EoTCollator(fe)([ds[0], ds[1], ds[2]])
     assert batch["input_features"].shape == (3, 80, 800) and batch["input_features"].dtype == torch.float32
@@ -99,17 +88,17 @@ def test_collator_extracts_features_per_batch(hf_splits):
     np.testing.assert_allclose(batch["input_features"][1].numpy(), single, atol=1e-5)  # same as one at a time
 
 
-def test_dataset_rejects_other_sample_rates():
-    ds = smart_turn_dataset(fake_hf_split(3, "x", sample_rate=8000), ["x-001"])
-    with pytest.raises(ValueError, match="16000 Hz"):
-        ds[0]
+def test_dataset_resamples_to_16k():
+    ds = smart_turn_dataset(fake_hf_split(3, "x", sample_rate=8000), [1], narrowband=False, loudness_dbfs=None)
+    x = ds[0]["input_values"]  # x-001: 1.75 s, so 28000 samples at 16 kHz after the padding
+    assert not x[: N - 28000].any() and x[N - 28000] != 0
 
 
 def test_dataset_noise_level_ignores_padding(hf_splits):
     # train-001 is 1.75 s, so 6.25 s of the window is padding: noise must be scaled to the 1.75 s of audio
     augment = build_augment(gain_db=0.0, noise_p=1.0, snr_db=(20.0, 20.0))
-    clean = smart_turn_dataset(hf_splits["train"], ["train-001"])[0]["input_values"]
-    noisy = smart_turn_dataset(hf_splits["train"], ["train-001"], augment)[0]["input_values"]
+    clean = smart_turn_dataset(hf_splits["train"], [1])[0]["input_values"]
+    noisy = smart_turn_dataset(hf_splits["train"], [1], augment)[0]["input_values"]
     assert not noisy[: N - 28000].any()  # padding is added after the noise, so it stays silent
     audio, noise = clean[-28000:], noisy[-28000:] - clean[-28000:]
     snr = 20 * np.log10(np.sqrt(np.mean(audio**2)) / np.sqrt(np.mean(noise**2)))
@@ -117,19 +106,45 @@ def test_dataset_noise_level_ignores_padding(hf_splits):
 
 
 def test_dataset_narrowband_flag(hf_splits):
-    full = smart_turn_dataset(hf_splits["train"], ["train-002"], narrowband=False)[0]["input_values"]
-    band = smart_turn_dataset(hf_splits["train"], ["train-002"])[0]["input_values"]
+    full = smart_turn_dataset(hf_splits["train"], [2], narrowband=False)[0]["input_values"]
+    band = smart_turn_dataset(hf_splits["train"], [2])[0]["input_values"]
     spectrum_full = np.abs(np.fft.rfft(full)) ** 2
     spectrum_band = np.abs(np.fft.rfft(band)) ** 2
     above_4k = np.fft.rfftfreq(N, 1 / SAMPLE_RATE) > 4200
     assert spectrum_band[above_4k].sum() < 1e-3 * spectrum_full[above_4k].sum()
 
 
-def test_ttd_split_and_labels(ttd_splits):
-    ds = load_split("train", dataset="ttd")
-    assert len(ds) == 40 and set(ds["data_source"]) == {"spokenwoz", "seamless"}
-    items = EoTDataset(ds, ["spokenwoz_train_001", "seamless_train_030"])  # label_column "label" (ClassLabel)
-    assert items.labels.tolist() == [1.0, 0.0] and items[0]["input_values"].shape == (N,)
+def test_load_split(hub):
+    splits = {name: load_split(name) for name in ("train", "validation", "test")}
+    for ds in splits.values():
+        assert ds.column_names == ["id", "audio", "dataset", "label"]
+        assert ds.features["label"].names == ["incomplete", "complete"]
+
+    # smart-turn: English only; train / validation are a random 90/10 split without the holdout sources
+    def smart_turn_ids(ds):
+        return {i for i, source in zip(ds["id"], ds["dataset"]) if source not in ("spokenwoz", "seamless")}
+
+    raw = hub["smart-turn"]["train"]
+    kept = {
+        i for i, lang, src in zip(raw["id"], raw["language"], raw["dataset"]) if lang == LANGUAGE and src not in HOLDOUT
+    }
+    train, val = smart_turn_ids(splits["train"]), smart_turn_ids(splits["validation"])
+    assert train | val == kept and not train & val and len(val) == round(0.1 * len(kept))
+    assert set(splits["test"]["dataset"]) & set(HOLDOUT) == {"rime_2"}  # holdout sources only in test
+    raw_test = hub["smart-turn"]["test"]
+    assert smart_turn_ids(splits["test"]) == {
+        i for i, lang in zip(raw_test["id"], raw_test["language"]) if lang == LANGUAGE
+    }
+
+    # ttd: its own splits; labels follow endpoint_bool / ttd's ClassLabel
+    assert [sum(s in ("spokenwoz", "seamless") for s in ds["dataset"]) for ds in splits.values()] == [40, 16, 20]
+    label_of = dict(zip(raw["id"], raw["endpoint_bool"])) | dict(
+        zip(hub["ttd"]["train"]["id"], hub["ttd"]["train"]["label"])
+    )
+    assert all(label == int(label_of[i]) for i, label in zip(splits["train"]["id"], splits["train"]["label"]))
+
+    items = EoTDataset(splits["train"])
+    assert items.labels.dtype == bool and len(items) == len(splits["train"]) and items[0]["input_values"].shape == (N,)
 
 
 def test_normalize_loudness():
@@ -148,8 +163,26 @@ def test_normalize_loudness():
 
 def test_dataset_items_are_loudness_normalized(hf_splits):
     for loudness in (-30.0, -20.0):
-        x = smart_turn_dataset(hf_splits["train"], ["train-003"], loudness_dbfs=loudness)[0]["input_values"]
+        x = smart_turn_dataset(hf_splits["train"], [3], loudness_dbfs=loudness)[0]["input_values"]
         audio = x[np.flatnonzero(x)[0] :]  # without the left padding
         assert 20 * np.log10(np.sqrt(np.mean(audio**2))) == pytest.approx(loudness, abs=0.05)
-    raw = smart_turn_dataset(hf_splits["train"], ["train-003"], narrowband=False, loudness_dbfs=None)[0]
+    raw = smart_turn_dataset(hf_splits["train"], [3], narrowband=False, loudness_dbfs=None)[0]
     assert np.abs(raw["input_values"]).max() > 0.5  # off: the fake clip's own level (0.3 std noise)
+
+
+def test_load_split_selects_datasets(hub):
+    assert set(load_split("test", ["ttd"])["dataset"]) == {"spokenwoz", "seamless"}
+    assert not {"spokenwoz", "seamless"} & set(load_split("validation", ["smart-turn"])["dataset"])
+    with pytest.raises(ValueError, match="datasets must be"):
+        load_split("train", ["nope"])
+
+
+def test_smart_turn_val_is_split_from_hub_order(hub):
+    # Note: the only shuffle is train_test_split's, on the filtered rows in Hub order
+    raw = hub["smart-turn"]["train"]
+    kept = [
+        i for i, lang, src in zip(raw["id"], raw["language"], raw["dataset"]) if lang == LANGUAGE and src not in HOLDOUT
+    ]
+    expected = Dataset.from_dict({"id": kept}).train_test_split(test_size=VAL_FRAC, seed=SEED)
+    assert load_split("validation", ["smart-turn"])["id"] == expected["test"]["id"]
+    assert load_split("train", ["smart-turn"])["id"] == expected["train"]["id"]

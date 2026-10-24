@@ -14,10 +14,11 @@ from pathlib import Path
 import numpy as np
 import soxr
 import torch
+from torchcodec.decoders import AudioDecoder
 from transformers import WhisperFeatureExtractor
 
-from turn_detection.data.audio import decode, pad_window, prepare_clip
-from turn_detection.data.constants import SAMPLE_RATE
+from turn_detection.data import SAMPLE_RATE
+from turn_detection.data.audio import pad_window, prepare_clip
 from turn_detection.model import EoTModel
 
 
@@ -52,7 +53,9 @@ def main() -> None:
     args = ap.parse_args()
     predictor = EoTPredictor(args.model, args.device)
     for path in args.files:
-        p = predictor.predict(*decode(path.read_bytes()))
+        # Note: decoded like training (datasets uses torchcodec): 16 kHz, stereo downmixed as (L + R) / sqrt 2
+        samples = AudioDecoder(str(path), sample_rate=SAMPLE_RATE, num_channels=1).get_all_samples()
+        p = predictor.predict(samples.data[0].numpy())
         print(f"{path}: P(complete) = {p:.3f} -> {'complete' if p >= predictor.threshold else 'incomplete'}")
 
 

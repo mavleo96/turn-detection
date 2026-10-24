@@ -1,88 +1,71 @@
-"""The datasets (data.constants.DATASETS) through Hugging Face `datasets`, EoTDataset (waveforms) and EoTCollator
-(features).
-
-`load_split` loads a split from the HF cache (downloaded once into HF_HOME, then memory-mapped) with the
-audio left as the original FLAC bytes: decoding with soundfile is fast, and `datasets`' own audio
-decoding would need torchcodec.
-
-    ds = load_split("train", dataset="ttd")                         # every row of the split
-    train = EoTDataset(ds, ds["id"], build_augment())
-    st = load_split("test")                                         # smart-turn: all languages
-    test = EoTDataset(st, manifest["id"], label_column="endpoint_bool")
-    item = train[0]                    # {"input_values": (128000,) float32, "labels": bool}
-    fe = WhisperFeatureExtractor.from_pretrained("openai/whisper-tiny", chunk_length=8)  # sized for 8 s, not 30 s
-    batch = EoTCollator(fe)([train[0], train[1]])         # {"input_features": (2, 80, 800), "labels"}
-
-Each item is decoded (16 kHz mono), cut to the last 8 s, band-limited to telephone bandwidth (`narrowband`, on
-by default), optionally augmented (see data.transforms), and only then zero-padded to 8 s (on the left; the
-per-clip audio steps are in data.audio), so the augmentation's noise level follows the speech, not the
-padding. The collator runs `WhisperFeatureExtractor` (sized for 8 s) on the whole batch. Augmentation is
-seeded from (seed, epoch, item), so a run is reproducible regardless of DataLoader worker count or scheduling.
-"""
-
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-import pandas as pd
 import torch
-from datasets import Audio, load_dataset
+from datasets import Audio, ClassLabel, concatenate_datasets, load_dataset
 from datasets import Dataset as HFDataset
-from torch.utils.data import ConcatDataset, Dataset
+from torch.utils.data import Dataset
 from torch_audiomentations import Compose
 from transformers import WhisperFeatureExtractor
 
-from .audio import decode, pad_window, prepare_clip
-from .constants import DATASETS, LANGUAGE, META_COLUMNS, SAMPLE_RATE
+from . import DATASETS, HOLDOUT, LANGUAGE, SAMPLE_RATE, SEED, SMART_TURN_TEST, SMART_TURN_TRAIN, TTD, VAL_FRAC
+from .audio import pad_window, prepare_clip
 from .transforms import apply_augment
 
-
-def load_split(split: str, num_proc: int | None = None, dataset: str = "smart-turn") -> HFDataset:
-    """One split of `dataset` (smart-turn: `train`, `test`; ttd: `train`, `validation`, `test`), every row,
-    audio as undecoded FLAC bytes."""
-    repo, repo_split = DATASETS[dataset]["splits"][split]
-    ds = load_dataset(repo, split=repo_split, num_proc=num_proc)
-    return ds.cast_column("audio", Audio(decode=False))
+COLUMNS = ["id", "audio", "dataset", "label"]
+LABELS = ClassLabel(names=["incomplete", "complete"])
+# Note: datasets decodes with torchcodec, resampling to 16 kHz and downmixing to mono ((L + R) / sqrt 2)
+AUDIO = Audio(sampling_rate=SAMPLE_RATE, num_channels=1)
 
 
-def load_metadata(split: str, ds: HFDataset | None = None) -> pd.DataFrame:
-    """smart-turn: English metadata of one split (no audio), sorted by id."""
-    ds = load_split(split) if ds is None else ds
-    meta = ds.select_columns(META_COLUMNS).to_pandas()
-    return meta[meta["language"] == LANGUAGE].sort_values("id", ignore_index=True)
+def load_split(split: str, datasets: Sequence[str] = DATASETS, num_proc: int | None = None) -> HFDataset:
+    """train / validation / test of `datasets` (smart-turn English, ttd) as id, audio (16 kHz mono), dataset (source),
+    label. smart-turn train without HOLDOUT is split VAL_FRAC at random into validation; test is its whole English
+    test split."""
+    unknown = set(datasets) - set(DATASETS)
+    if unknown or not datasets:
+        raise ValueError(f"datasets must be some of {DATASETS}, got {list(datasets)}")
 
+    parts = []
+    if "smart-turn" in datasets:
+        holdout = () if split == "test" else HOLDOUT
+        repo = SMART_TURN_TEST if split == "test" else SMART_TURN_TRAIN
+        smart_turn = load_dataset(repo, split="train", num_proc=num_proc)  # both repos have one split, "train"
+        smart_turn = smart_turn.filter(
+            lambda language, source: language == LANGUAGE and source not in holdout,
+            input_columns=["language", "dataset"],
+            num_proc=num_proc,
+        )
+        if split != "test":
+            train_val = smart_turn.train_test_split(test_size=VAL_FRAC, seed=SEED)
+            smart_turn = train_val["train" if split == "train" else "test"]
+        # Note: a ClassLabel cast rewrites the whole table (audio included) into the cache, so cast only this subset;
+        # ttd's label is already LABELS
+        smart_turn = smart_turn.rename_column("endpoint_bool", "label").select_columns(COLUMNS)
+        parts.append(smart_turn.cast_column("label", LABELS))
 
-def rows_for_ids(ds: HFDataset, ids: Sequence[str]) -> np.ndarray:
-    """Row numbers of `ids` (in the given order) in `ds`; every id must be present."""
-    ids = pd.Series(ids)
-    row_of_id = pd.Series(np.arange(len(ds)), index=pd.Index(ds["id"]))
+    if "ttd" in datasets:
+        parts.append(load_dataset(TTD, split=split, num_proc=num_proc).rename_column("data_source", "dataset"))
 
-    missing = ~ids.isin(row_of_id.index)
-    if missing.any():
-        raise KeyError(f"{int(missing.sum())} ids are not in the dataset, e.g. {ids[missing].iloc[0]}")
-
-    return row_of_id.loc[ids.to_numpy()].to_numpy()
+    # Note: the repos declare different audio features (ttd: sampling_rate 16000); an Audio cast is metadata only
+    parts = [d.select_columns(COLUMNS).cast_column("audio", AUDIO) for d in parts]
+    return concatenate_datasets(parts)
 
 
 class EoTDataset(Dataset):
-    """{"input_values": (augmented) last 8 s of 16 kHz audio, float32, "labels": bool (True = turn complete)}
-    for the clips with `ids`; `label_column` holds 1 / True = complete (DATASETS[...]["label"]). Features are
-    computed per batch by EoTCollator."""
+    """Clips of a split -> {"input_values": prepared (augmented) 8 s waveform, "labels": True = complete}."""
 
     def __init__(
         self,
         ds: HFDataset,
-        ids: Sequence[str],
         augment: Compose | None = None,
         seed: int = 0,
         narrowband: bool = True,
         loudness_dbfs: float | None = -30.0,
-        label_column: str = "label",
     ):
-        self.rows = rows_for_ids(ds, ids)
-
-        self.labels = np.asarray(ds[label_column], dtype=bool)[self.rows]
-        self.audio = ds.select_columns(["audio"])  # undecoded FLAC bytes
+        self.labels = np.asarray(ds["label"], dtype=bool)
+        self.audio = ds.select_columns(["audio"]).cast_column("audio", AUDIO)
 
         self.augment = augment
         self.narrowband = narrowband
@@ -94,33 +77,18 @@ class EoTDataset(Dataset):
         self.epoch = epoch
 
     def __len__(self) -> int:
-        return len(self.rows)
+        return len(self.labels)
 
     def __getitem__(self, i: int) -> dict:
-        row = int(self.rows[i])
-        audio_bytes = self.audio[row]["audio"]["bytes"]
-        x, sr = decode(audio_bytes)
-        if sr != SAMPLE_RATE:
-            raise ValueError(f"expected {SAMPLE_RATE} Hz audio, got {sr} Hz (row {row})")
+        x = self.audio[i]["audio"].get_all_samples().data[0].numpy()  # (T,)
 
         x = prepare_clip(x, self.narrowband, self.loudness_dbfs)
+        # Note: augment before padding, so the noise SNR is measured against the speech, not the zeros
         if self.augment is not None:
-            x = apply_augment(self.augment, x, (self.seed, self.epoch, i))  # before padding: SNR vs. the speech
-        x = pad_window(x)
+            x = apply_augment(self.augment, x, (self.seed, self.epoch, i))
+        x = pad_window(x)  # (128000,)
 
         return {"input_values": x, "labels": self.labels[i]}
-
-
-class EoTConcat(ConcatDataset):
-    """Several EoTDatasets as one (e.g. ttd + smart-turn), with their labels and the epoch passed through."""
-
-    def __init__(self, datasets: list[EoTDataset]):
-        super().__init__(datasets)
-        self.labels = np.concatenate([d.labels for d in datasets])
-
-    def set_epoch(self, epoch: int) -> None:
-        for d in self.datasets:
-            d.set_epoch(epoch)
 
 
 @dataclass
@@ -130,16 +98,13 @@ class EoTCollator:
     feature_extractor: WhisperFeatureExtractor
 
     def __call__(self, items: list[dict]) -> dict[str, torch.Tensor]:
-        # One clip at a time: on a CPU worker thread the extractor's batched path is ~2.4x slower for
-        # 64 clips than 64 single calls (measured), and the results are the same.
+        # Note: one clip at a time: on a CPU worker the extractor's batched path is ~2.4x slower (measured)
         features = []
         for item in items:
             out = self.feature_extractor(item["input_values"], sampling_rate=SAMPLE_RATE, return_tensors="np")
             features.append(out.input_features[0])  # (80, frames)
 
-        labels = [item["labels"] for item in items]
-
         return {
             "input_features": torch.from_numpy(np.stack(features)),  # (B, 80, frames)
-            "labels": torch.tensor(labels),  # (B,) bool; the model casts
+            "labels": torch.tensor([item["labels"] for item in items]),  # (B,) bool; the model casts
         }

@@ -1,7 +1,8 @@
 # The `turn_detection` package (src/turn_detection/: data, model, train).
-#   pip install -e ".[train]"   training, evaluation, scripts and tests (editable: data.constants paths resolve
+#   pip install -e ".[train]"   training, evaluation, scripts and tests (editable: turn_detection.data paths resolve
 #                               to this checkout); the exact training env is pinned in requirements.txt
-#   pip install .               core only: the model and audio preprocessing, enough to serve (see serve/)
+#   pip install .               core only: the model and audio preprocessing, enough to serve (see serve/); decoding
+#                               is the caller's (torchcodec as in training, or anything that gives 16 kHz mono)
 
 [build-system]
 requires = ["setuptools>=69"]
@@ -14,7 +15,6 @@ description = "End-of-turn detection for voice-agent pipelines"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.0",
-    "soundfile>=0.13",
     "soxr>=0.5",
     "torch>=2.6",
     "transformers>=5.20",
@@ -26,9 +26,11 @@ train = [
     "datasets>=5.1",
     "matplotlib>=3.11",
     "pandas>=3.1",
-    "pyarrow>=26.0",  # pandas.read_parquet (manifests)
+    "pyarrow>=26.0",  # pandas.read_parquet
     "scikit-learn>=1.9",
+    "soundfile>=0.13",  # scripts and tests: writing WAV / FLAC
     "torch-audiomentations>=0.12",
+    "torchcodec>=0.17",  # audio decoding: datasets (EoTDataset), scripts/predict.py
     "wandb>=0.31",
 ]
 

@@ -1,7 +1,8 @@
 import pytest
 
-from turn_detection.data import dataset
-from turn_detection.data.constants import DATASETS
+import explore_dataset
+import samples
+from turn_detection.data import SMART_TURN_TEST, SMART_TURN_TRAIN, TTD, dataset
 
 from .helpers import fake_hf_split, fake_ttd_split
 
@@ -17,27 +18,17 @@ def hub(monkeypatch):
             "test": fake_ttd_split(20, "test", seed=2),
         },
     }
-    by_repo = {DATASETS[name]["splits"][split]: ds for name, splits in fakes.items() for split, ds in splits.items()}
-    monkeypatch.setattr(dataset, "load_dataset", lambda repo, split="train", num_proc=None: by_repo[(repo, split)])
+    by_repo = {
+        (SMART_TURN_TRAIN, "train"): fakes["smart-turn"]["train"],
+        (SMART_TURN_TEST, "train"): fakes["smart-turn"]["test"],
+    }
+    by_repo |= {(TTD, split): ds for split, ds in fakes["ttd"].items()}
+    # Note: every module that calls load_dataset gets the fakes
+    for module in (dataset, explore_dataset, samples):
+        monkeypatch.setattr(module, "load_dataset", lambda repo, split, num_proc=None: by_repo[(repo, split)])
     return fakes
 
 
 @pytest.fixture
 def hf_splits(hub):
     return hub["smart-turn"]
-
-
-@pytest.fixture
-def ttd_splits(hub):
-    return hub["ttd"]
-
-
-@pytest.fixture
-def artifacts(tmp_path, hf_splits, monkeypatch):
-    """scripts/split.py outputs for the fake smart-turn splits: artifacts/manifests/."""
-    import split
-
-    root = tmp_path / "artifacts"
-    monkeypatch.setattr("sys.argv", ["split.py", "--out", str(root / "manifests")])
-    split.main()
-    return root

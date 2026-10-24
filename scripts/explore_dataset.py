@@ -18,7 +18,6 @@ Run (from the repo root):  python scripts/explore_dataset.py [--num-proc 16] [--
 """
 
 import argparse
-import io
 import json
 import os
 from datetime import date
@@ -27,16 +26,14 @@ from pathlib import Path
 import matplotlib
 import numpy as np
 import pandas as pd
-import soundfile as sf
-from datasets import Features, Value
+from datasets import Features, Value, load_dataset
 
-from turn_detection.data.constants import DATASETS, LANGUAGE, META_COLUMNS, RESULTS_DIR, WINDOW_S
-from turn_detection.data.dataset import load_split
+from turn_detection.data import LANGUAGE, META_COLUMNS, RESULTS_DIR, SMART_TURN_TEST, SMART_TURN_TRAIN, WINDOW_S
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 (after selecting the backend)
 
-REPOS = {split: repo for split, (repo, _) in DATASETS["smart-turn"]["splits"].items()}
+REPOS = {"train": SMART_TURN_TRAIN, "test": SMART_TURN_TEST}
 
 FRAME_MS = 20
 SILENCE_DB = -40.0  # trailing silence: frames this far below the clip's loudest frame
@@ -88,13 +85,16 @@ def trailing_silence(x: np.ndarray, sr: int, frame_ms: int = FRAME_MS, rel_db: f
     return (n_frames - 1 - last_loud) * frame / sr
 
 
-def clip_stats(audio_bytes: bytes) -> dict:
+def clip_stats(audio) -> dict:
+    """Stats of one clip from its datasets AudioDecoder (the file's own rate and channels)."""
     try:
-        x, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)
+        samples = audio.get_all_samples()
     except Exception as e:
         return {"error": repr(e)[:200]}
-    channels = x.shape[1]
-    x = x.mean(axis=1)
+    sr = samples.sample_rate
+    x = samples.data.numpy()  # (channels, T)
+    channels = x.shape[0]
+    x = x.mean(axis=0)
     absx = np.abs(x)
     n = len(x)
     return {
@@ -112,12 +112,12 @@ def clip_stats(audio_bytes: bytes) -> dict:
 
 
 def _audio_stats(batch: dict) -> dict:
-    rows = [clip_stats(audio["bytes"]) for audio in batch["audio"]]
+    rows = [clip_stats(audio) for audio in batch["audio"]]
     return {"id": batch["id"], **{c: [r.get(c) for r in rows] for c in STAT_COLUMNS}}
 
 
 def audio_stats(ds, num_proc: int) -> pd.DataFrame:
-    """Per-clip audio stats in dataset order. The FLAC bytes are decoded by soundfile, not `datasets`."""
+    """Per-clip audio stats in dataset order, decoded by `datasets` (torchcodec)."""
     mapped = ds.select_columns(["id", "audio"]).map(
         _audio_stats,
         batched=True,
@@ -132,8 +132,8 @@ def audio_stats(ds, num_proc: int) -> pd.DataFrame:
 
 def load_all(num_proc: int | None, with_audio: bool) -> pd.DataFrame:
     frames = []
-    for split in REPOS:
-        ds = load_split(split, num_proc)
+    for split, repo in REPOS.items():
+        ds = load_dataset(repo, split="train", num_proc=num_proc)
         meta = ds.select_columns(META_COLUMNS).to_pandas()
         if with_audio:
             stats = audio_stats(ds, num_proc)

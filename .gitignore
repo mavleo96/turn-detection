@@ -222,13 +222,14 @@ __marimo__/
 # demo session logs (demo/runs/)
 runs/
 
-# generated: manifests, folds, training runs
+# generated: training runs
 artifacts/
 # Weights & Biases local run files
 wandb/
-# dataset exploration results and listening samples (except the peer-reviewed TTD vs smart-turn analysis)
+# dataset exploration results and listening samples (except the tracked analyses)
 results/*
 !results/ttd_vs_smart_turn/
+!results/data_exploration/
 
 # temporarily ignore serve directory
 serve/

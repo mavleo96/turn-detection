@@ -1,10 +1,10 @@
-"""Evaluate a trained model on the test sets and optionally time inference.
+"""Evaluate a trained model on the test split and optionally time inference.
 
-Test sets (--datasets, default both): the ttd test split (SpokenWOZ + Seamless) and the English smart-turn test
-split (the clips of scripts/split.py's test manifest). Preprocessing comes from the model's config, as in
-training. Reports metrics at 0.5 and at the model's val-chosen threshold (config.threshold, never tuned on
-test), broken down by source (and, for smart-turn, by synthetic flag). Writes eval_<dataset>.json,
-predictions_<dataset>.parquet and eval_report.md next to the model (or to --out).
+The test split of --datasets (data.dataset.load_split; default both): English smart-turn test (including the holdout
+sources, never trained on) + ttd test (SpokenWOZ + Seamless). Preprocessing comes from the model's config, as in
+training. Reports metrics at 0.5 and at the model's val-chosen threshold (config.threshold, never tuned on test),
+overall and per source (`dataset`). Writes eval.json, predictions.parquet and eval_report.md next to the model
+(or to --out).
 
 Run (from the repo root):  python scripts/run_eval.py --model artifacts/runs/<run>/best [--datasets ttd] [--benchmark]
 """
@@ -20,44 +20,18 @@ import pandas as pd
 import torch
 from transformers import Trainer, TrainingArguments, WhisperFeatureExtractor
 
+from turn_detection.data import DATASETS, SAMPLE_RATE, WINDOW_S
 from turn_detection.data.audio import pad_window, prepare_clip
-from turn_detection.data.constants import DATASETS, MANIFESTS_DIR, SAMPLE_RATE, WINDOW_S
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.model import EoTModel
 from turn_detection.train.metrics import breakdown, eot_metrics, sigmoid
 
 REPORT_METRICS = ["accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc"]
-BREAKDOWNS = {"ttd": ["source"], "smart-turn": ["source", "synthetic"]}  # per-group metrics in the report
 
 
-def load_test_clips(name: str, source, manifest_path: Path) -> pd.DataFrame:
-    """The test clips of dataset `name`: id, label, source (+ synthetic for smart-turn)."""
-    if name == "smart-turn":  # the English clips of scripts/split.py's test manifest
-        manifest = pd.read_parquet(manifest_path)
-        clips = {"id": manifest["id"], "source": manifest["dataset"], "synthetic": manifest["synthetic"]}
-        return pd.DataFrame(clips)
-
-    spec = DATASETS[name]
-    meta = source.select_columns(["id", spec["source"]]).to_pandas()
-    return meta.rename(columns={spec["source"]: "source"})
-
-
-def evaluate_test(
-    model: EoTModel,
-    feature_extractor: WhisperFeatureExtractor,
-    source,
-    clips: pd.DataFrame,
-    args,
-    name: str = "ttd",
-) -> tuple[dict, pd.DataFrame]:
-    """Metrics on `clips` (load_test_clips) of `source`, the HF test split of dataset `name`."""
-    dataset = EoTDataset(
-        source,
-        clips["id"],
-        narrowband=model.config.narrowband,
-        loudness_dbfs=model.config.loudness_dbfs,
-        label_column=DATASETS[name]["label"],
-    )
+def evaluate_test(model: EoTModel, feature_extractor: WhisperFeatureExtractor, test, args) -> tuple[dict, pd.DataFrame]:
+    """Metrics on `test` (load_split("test")), overall and per source, and the per-clip predictions."""
+    dataset = EoTDataset(test, narrowband=model.config.narrowband, loudness_dbfs=model.config.loudness_dbfs)
     with tempfile.TemporaryDirectory() as tmp:
         trainer = Trainer(
             model=model,
@@ -74,17 +48,14 @@ def evaluate_test(
         )
         probs = sigmoid(trainer.predict(dataset).predictions)
     threshold = model.config.threshold
-    preds = clips.reset_index(drop=True).assign(label=dataset.labels.astype(int), prob=probs)
+    preds = test.select_columns(["id", "dataset"]).to_pandas().assign(label=dataset.labels.astype(int), prob=probs)
 
     result = {
-        "dataset": name,
         "n": len(preds),
         "at_0.5": eot_metrics(dataset.labels, probs, 0.5),
         "at_threshold": eot_metrics(dataset.labels, probs, threshold),
+        "by_dataset": breakdown(preds, "dataset", threshold).to_dict("records"),
     }
-    for column in BREAKDOWNS[name]:
-        result[f"by_{column}"] = breakdown(preds, column, threshold).to_dict("records")
-
     return result, preds
 
 
@@ -122,23 +93,19 @@ def _fmt(v) -> str:
     return "–" if v is None else f"{v:.4f}" if isinstance(v, float) else str(v)
 
 
-def report(results: list[dict], threshold: float, bench: list[dict]) -> str:
-    lines = ["# EoT evaluation\n", f"Val-chosen threshold {threshold:.4f}.\n"]
+def report(result: dict, threshold: float, bench: list[dict]) -> str:
+    lines = ["# EoT evaluation\n", f"Val-chosen threshold {threshold:.4f}.\n", f"\n## Test ({result['n']} clips)\n"]
+    lines.append("| threshold | " + " | ".join(REPORT_METRICS) + " |")
+    lines.append("|" + "---|" * (len(REPORT_METRICS) + 1))
+    for at in ("at_0.5", "at_threshold"):
+        m = result[at]
+        lines.append(f"| {m['threshold']:.4f} | " + " | ".join(_fmt(m.get(k)) for k in REPORT_METRICS) + " |")
 
-    for result in results:
-        lines.append(f"\n## {result['dataset']} test ({result['n']} clips)\n")
-        lines.append("| threshold | " + " | ".join(REPORT_METRICS) + " |")
-        lines.append("|" + "---|" * (len(REPORT_METRICS) + 1))
-        for at in ("at_0.5", "at_threshold"):
-            m = result[at]
-            lines.append(f"| {m['threshold']:.4f} | " + " | ".join(_fmt(m.get(k)) for k in REPORT_METRICS) + " |")
-
-        for column in BREAKDOWNS[result["dataset"]]:
-            df = pd.DataFrame(result[f"by_{column}"])
-            lines.append(f"\n**by {column}** (threshold {threshold:.4f})\n")
-            lines.append("| " + " | ".join(df.columns) + " |")
-            lines.append("|" + "---|" * len(df.columns))
-            lines += ["| " + " | ".join(_fmt(v) for v in row) + " |" for row in df.itertuples(index=False)]
+    df = pd.DataFrame(result["by_dataset"])
+    lines.append(f"\n**by source** (threshold {threshold:.4f})\n")
+    lines.append("| " + " | ".join(df.columns) + " |")
+    lines.append("|" + "---|" * len(df.columns))
+    lines += ["| " + " | ".join(_fmt(v) for v in row) + " |" for row in df.itertuples(index=False)]
 
     if bench:
         lines.append("\n**Latency per decision (batch 1, feature extraction + model)**\n")
@@ -147,12 +114,11 @@ def report(results: list[dict], threshold: float, bench: list[dict]) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Evaluate an EoT model on the test sets")
+    ap = argparse.ArgumentParser(description="Evaluate an EoT model on the test split")
     ap.add_argument(
         "--model", type=Path, required=True, help="a training output with model + feature extractor, e.g. <run>/best"
     )
-    ap.add_argument("--datasets", nargs="+", choices=sorted(BREAKDOWNS), default=["ttd", "smart-turn"])
-    ap.add_argument("--manifest", type=Path, default=MANIFESTS_DIR / "test.parquet", help="smart-turn test clips")
+    ap.add_argument("--datasets", nargs="+", choices=DATASETS, default=list(DATASETS), help="test data")
     ap.add_argument("--out", type=Path, default=None, help="default: the model directory")
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -166,26 +132,19 @@ def main() -> None:
     model = EoTModel.from_pretrained(args.model)
     feature_extractor = WhisperFeatureExtractor.from_pretrained(args.model)
 
-    results = []
-    for name in args.datasets:
-        source = load_split("test", dataset=name)
-        clips = load_test_clips(name, source, args.manifest)
-        result, preds = evaluate_test(model, feature_extractor, source, clips, args, name=name)
+    result, preds = evaluate_test(model, feature_extractor, load_split("test", args.datasets), args)
+    (out / "eval.json").write_text(json.dumps(result, indent=1, default=float))
+    preds.to_parquet(out / "predictions.parquet", index=False)
 
-        (out / f"eval_{name}.json").write_text(json.dumps(result, indent=1, default=float))
-        preds.to_parquet(out / f"predictions_{name}.parquet", index=False)
-        results.append(result)
-
-        m = result["at_threshold"]
-        scores = " | ".join(f"{k} {_fmt(m.get(k))}" for k in REPORT_METRICS)
-        print(f"{name} test: {scores}")
+    m = result["at_threshold"]
+    print("test: " + " | ".join(f"{k} {_fmt(m.get(k))}" for k in REPORT_METRICS))
 
     bench = []
     if args.benchmark:
         bench.append(benchmark(model, feature_extractor, args.device))
         if args.device != "cpu":
             bench.append(benchmark(model, feature_extractor, "cpu", runs=30))
-    (out / "eval_report.md").write_text(report(results, model.config.threshold, bench))
+    (out / "eval_report.md").write_text(report(result, model.config.threshold, bench))
     print(f"wrote {out / 'eval_report.md'}")
 
 

@@ -14,11 +14,13 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
 
 ## Environment
 - Python env: `/venv/turn` (conda env `turn`, torch 2.14.1+cu130). `/venv/main` has no transformers.
-- Ruff: `/venv/turn/bin/ruff` (from requirements-dev.txt, same version as pre-commit, which runs ruff check --fix + format). Line length 120.
+- Ruff: `/venv/turn/bin/ruff` (requirements-dev.txt, same version as pre-commit, which runs ruff check --fix +
+  format). Line length 120.
 - Tests: `/venv/turn/bin/python -m pytest -q` (~30 s, CPU, no network).
-- GPU: RTX 4090 (256 CPUs, 503 GB RAM); earlier timings were on an RTX 3060. `/workspace` is not a volume (lost on recycle).
-- HF cache: `HF_HOME=/workspace/.hf_home`, empty on a fresh instance; needs TTD ~26 GB prepared, smart-turn train 39 GB +
-  test 5 GB. Then run `scripts/split.py` for the smart-turn manifests.
+- GPU: RTX 4090; 61-CPU cgroup quota (`nproc` says 256), 503 GB RAM; earlier timings were on an RTX 3060.
+  `/workspace` is not a volume (lost on recycle).
+- HF cache: `HF_HOME=/workspace/.hf_home`, empty on a fresh instance; needs TTD ~26 GB prepared, smart-turn train
+  39 GB + test 5 GB. Building the splits takes ~20 s the first time (cached by `datasets` after that).
 - W&B logs to a CoreWeave-hosted server (`api.forge.coreweave.com`, team `mavleo96-team`, project `turn-detection`);
   `train()` sets `WANDB_PROJECT` from `--project` (the HF W&B callback ignores `args.project`).
 - librosa `pyin` segfaults in `/venv/turn` (numba 0.68); use a numpy pitch tracker. Use spawned (not forked)
@@ -28,28 +30,34 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
 
 ## Layout
 - `src/turn_detection/` (installed with `pip install --no-deps -e .`):
-  - `data/constants.py` `DATASETS` registry: `smart-turn` (pipecat-ai v3.2, English only, label `endpoint_bool`,
-    source `dataset`) and `ttd` (`mavleo96/turn-detection-data`, label `label`, source `data_source`).
-  - `data/audio.py` per-clip steps shared by training, eval and serving: `decode`, `prepare_clip` (last 8 s ->
+  - `data/__init__.py` constants and paths: repos `SMART_TURN_TRAIN` / `SMART_TURN_TEST` (pipecat-ai v3.2, one
+    split "train" each) and `TTD` (`mavleo96/turn-detection-data`), `DATASETS` (`smart-turn`, `ttd`), `HOLDOUT`
+    (`human_5`, `rime_2`), `VAL_FRAC`.
+  - `data/audio.py` per-clip steps shared by training, eval and serving: `prepare_clip` (last 8 s ->
     `narrowband` 16k->8k->16k -> `normalize_loudness` to -30 dBFS RMS), `pad_window` (left zero-pad to 8 s).
-  - `data/dataset.py` `load_split(split, dataset=...)`, `EoTDataset` (augment between prepare_clip and padding, so
-    noise SNR follows the speech), `EoTConcat` (joins datasets), `EoTCollator` (WhisperFeatureExtractor, 8 s).
+  - `data/dataset.py` `load_split(split, datasets)` (train / validation / test of smart-turn and/or TTD as `id,
+    audio, dataset, label`; audio `AUDIO` = 16 kHz mono, decoded by `datasets`/torchcodec; label
+    `ClassLabel(incomplete, complete)`), `EoTDataset` (augments between prepare_clip and padding, so noise SNR
+    follows the speech), `EoTCollator` (WhisperFeatureExtractor, 8 s; bool labels).
   - `data/transforms.py` `build_augment(gain_db=6, noise_p=0.3)`: gain ±6 dB + colored noise (white..brown) 20-40 dB.
   - `model/` `EoTConfig` (whisper name, input_frames 800, head_hidden 64, dropout, threshold, narrowband,
     loudness_dbfs; encoder config derived from the whisper name and saved), `EoTModel` (frozen-by-trainer Whisper
     Tiny encoder -> softmax layer weights over 4 layers -> attention pooling -> 384-64-1 MLP).
   - `train/` HF Trainer setup (`trainer.py`), sklearn metrics (`metrics.py`), CLI `python -m turn_detection.train`.
-- `scripts/`: `split.py` (smart-turn train/val = sorted by id, last 10% val; writes `artifacts/manifests/`),
-  `run_eval.py` (both test sets, per-source breakdowns, `--benchmark`), `predict.py`, `explore_dataset.py`, `samples.py`.
+- `scripts/`: `run_eval.py` (the test split, `--datasets`, per-source breakdown, `--benchmark`), `predict.py`, and
+  the smart-turn exploration scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
+  `load_dataset` in `dataset`, `explore_dataset` and `samples`).
 - `demo/`: separate browser mic -> Silero VAD + Nemotron streaming ASR harness (own env/tests).
 - `serve/` (FastAPI + micro-batching, CPU Dockerfile) lives on the `serve` branch only (ignored on `main`).
-- Generated, gitignored: `artifacts/` (manifests, runs, models/untrained), `results/` (analyses).
+- Generated, gitignored: `artifacts/` (runs, models/untrained), `results/` (analyses; `ttd_vs_smart_turn/` tracked).
 
 ## Training and evaluation
-- `python -m turn_detection.train --dataset ttd|smart-turn|ttd,smart-turn` (default `ttd`). 5 epochs, batch 64,
+- `python -m turn_detection.train [--datasets smart-turn ttd]` (default both). 5 epochs, batch 64,
   AdamW lr 1e-3, wd 0.01, 5% warmup + cosine to 0, grad clip 1.0, bf16, frozen encoder (25k trainable params),
   best epoch by val ROC AUC, threshold = best F1 on val (saved in `best/config.json`).
-- TTD uses its own train/validation splits; smart-turn uses `artifacts/manifests/` (run `scripts/split.py` first).
+- Splits (`load_split`): train = smart-turn English train without `HOLDOUT`, 90% (random, seed 42) + TTD train
+  (52,893 + 333,284); validation = the other 10% + TTD validation (5,877 + 37,600); test = all English smart-turn
+  test (holdout sources included: 402 human_5 + 394 rime_2, never seen in train or val) + TTD test (7,820 + 60,574).
 - Metrics everywhere: accuracy, f1, fpr (incomplete predicted complete = interrupts), fnr (complete predicted
   incomplete = waits too long), roc_auc, pr_auc.
 - Time on the RTX 3060: TTD ~30 min / 5 epochs (~1,100 clips/s), smart-turn ~7 min, both ~35 min; eval ~2 min.
@@ -71,11 +79,11 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
   than SpokenWOZ before normalization; splits share no conversation (Seamless: no person); Hub rows are ordered by
   source (SpokenWOZ first), so never take "the first N rows".
 - smart-turn English: 69% human speech; clips end ~0.7 s after the last speech; train/val split is per clip
-  (possible speaker leakage); Hub rows are shuffled.
+  (possible speaker leakage, except for the holdout sources); Hub rows are shuffled; no train/test id overlap.
 - Full analysis (peer-reviewed): `results/ttd_vs_smart_turn/FINDINGS.md`.
 
 ## Open ideas (not done)
-- Make `--dataset ttd,smart-turn` the default; threshold for a target FPR instead of best F1.
+- Threshold for a target FPR instead of best F1.
 - Unfreeze the encoder with a separate low encoder LR (the trainer has one LR for all params today).
 - Re-cut smart-turn clips to VAD-style endings; match the demo VAD to the dataset's.
 
@@ -87,3 +95,9 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
   real Whisper Tiny is downloaded). Fix: `encoder_config: dict | None = None` parameter and
   `self.encoder_config = encoder_config or WhisperConfig.from_pretrained(whisper).to_dict()`; helpers pass
   `encoder_config=`.
+- The `serve` branch is behind `main`: it imports `turn_detection.data.audio.decode` (removed: decoding is the
+  caller's now) and `turn_detection.data.constants` (now `turn_detection.data`). Serving should decode like training:
+  torchcodec `AudioDecoder(..., sample_rate=16000, num_channels=1)` (stereo -> (L + R) / sqrt 2, FFmpeg resampling;
+  `scripts/predict.py` does this); if torchcodec/FFmpeg can't go in the serving image, serve defines its own decoder
+  (soundfile channel mean differs only for stereo, by 3 dB, which loudness normalization removes). All dataset
+  clips are 16 kHz mono (smart-turn: `explore_dataset.py`, all 302,473; TTD: 600 sampled).
