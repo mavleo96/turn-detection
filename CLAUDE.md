@@ -16,7 +16,7 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
 - Python env: `/venv/turn` (conda env `turn`, torch 2.14.1+cu130). `/venv/main` has no transformers.
 - Ruff: `/venv/turn/bin/ruff` (requirements-dev.txt, same version as pre-commit, which runs ruff check --fix +
   format). Line length 120.
-- Tests: `/venv/turn/bin/python -m pytest -q` (~30 s, CPU, no network).
+- Tests: `/venv/turn/bin/python -m pytest -q` (~50 s, CPU, no network).
 - GPU: RTX 4090; 61-CPU cgroup quota (`nproc` says 256), 503 GB RAM; earlier timings were on an RTX 3060.
   `/workspace` is not a volume (lost on recycle).
 - HF cache: `HF_HOME=/workspace/.hf_home`, empty on a fresh instance; needs TTD ~26 GB prepared, smart-turn train
@@ -44,8 +44,8 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
     loudness_dbfs; encoder config derived from the whisper name and saved), `EoTModel` (frozen-by-trainer Whisper
     Tiny encoder -> softmax layer weights over 4 layers -> attention pooling -> 384-64-1 MLP).
   - `train/` HF Trainer setup (`trainer.py`), sklearn metrics (`metrics.py`), CLI `python -m turn_detection.train`.
-- `scripts/`: `run_eval.py` (the test split, `--datasets`, per-source breakdown, `--benchmark`), `predict.py`, and
-  the smart-turn exploration scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
+- `scripts/`: `run_eval.py` (the test split, `--datasets`, per-source breakdown, `--benchmark`) and the exploration
+  scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
   `load_dataset` in `dataset`, `explore_dataset` and `samples`).
 - `demo/`: separate browser mic -> Silero VAD + Nemotron streaming ASR harness (own env/tests).
 - `serve/` (FastAPI + micro-batching, CPU Dockerfile) lives on the `serve` branch only (ignored on `main`).
@@ -98,7 +98,7 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
   `encoder_config=`.
 - The `serve` branch is behind `main`: it imports `turn_detection.data.audio.decode` (removed: decoding is the
   caller's now) and `turn_detection.data.constants` (now `turn_detection.data`). Serving should decode like training:
-  torchcodec `AudioDecoder(..., sample_rate=16000, num_channels=1)` (stereo -> (L + R) / sqrt 2, FFmpeg resampling;
-  `scripts/predict.py` does this); if torchcodec/FFmpeg can't go in the serving image, serve defines its own decoder
+  torchcodec `AudioDecoder(..., sample_rate=16000, num_channels=1)` (stereo -> (L + R) / sqrt 2, FFmpeg
+  resampling); if torchcodec/FFmpeg can't go in the serving image, serve defines its own decoder
   (soundfile channel mean differs only for stereo, by 3 dB, which loudness normalization removes). All dataset
   clips are 16 kHz mono (smart-turn: `explore_dataset.py`, all 302,473; TTD: 600 sampled).

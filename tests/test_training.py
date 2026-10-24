@@ -1,17 +1,15 @@
 import json
 import os
 from argparse import Namespace
+from pathlib import Path
 
 import numpy as np
 import pytest
-import soundfile as sf
 import torch
 from transformers import WhisperFeatureExtractor
 
-from predict import EoTPredictor
-from predict import main as predict_main
 from run_eval import evaluate_test
-from turn_detection.data import SAMPLE_RATE, WINDOW_S
+from turn_detection.data import RUNS_DIR, SAMPLE_RATE, WINDOW_S
 from turn_detection.data.dataset import load_split
 from turn_detection.model import EoTModel
 from turn_detection.train.metrics import best_f1_threshold, eot_metrics
@@ -51,7 +49,7 @@ def last_state(run):
     return max(run.glob("checkpoint-*/trainer_state.json"), key=lambda p: int(p.parent.name.split("-")[1]))
 
 
-def test_train_end_to_end(tmp_path, hub, monkeypatch):
+def test_train_end_to_end(tmp_path, hub):
     model = tiny_model()
     encoder_before = {k: v.clone() for k, v in model.encoder.state_dict().items()}
     run = train(training_args(tmp_path), model=model)
@@ -77,16 +75,9 @@ def test_train_end_to_end(tmp_path, hub, monkeypatch):
     sources = {"human", "tts", "rime_2", "spokenwoz", "seamless"}
     assert {r["dataset"] for r in result["by_dataset"]} == sources
 
-    wav = tmp_path / "clip.wav"
-    sf.write(wav, 0.1 * np.random.default_rng(0).standard_normal(22050 * 3), 22050)
-    audio, sr = sf.read(wav, dtype="float32")
-    assert 0 <= EoTPredictor(run / "best").predict(audio, sr) <= 1
-    monkeypatch.setattr("sys.argv", ["predict.py", "--model", str(run / "best"), "--device", "cpu", str(wav)])
-    predict_main()  # decodes the file with torchcodec, like training
-
 
 def test_max_steps_and_limit(tmp_path, hub, monkeypatch):
-    monkeypatch.delenv("WANDB_PROJECT", raising=False)
+    monkeypatch.setenv("WANDB_PROJECT", "from-the-environment")  # --project wins
     args = training_args(tmp_path, max_steps=1, max_train_samples=8, augment=False)
     run = train(args, model=tiny_model())
     assert EoTModel.from_pretrained(run / "best").config.loudness_dbfs == -30.0
@@ -104,6 +95,7 @@ def test_cli_defaults_and_flags(monkeypatch):
     assert args.metric_for_best_model == "roc_auc" and args.load_best_model_at_end and args.project == "turn-detection"
     assert args.learning_rate == 1e-3 and args.augment and args.freeze_encoder and args.max_train_samples is None
     assert args.datasets == ["smart-turn", "ttd"]
+    assert Path(args.output_dir).parent == RUNS_DIR  # artifacts/runs/<timestamp>, not TrainingArguments' default
     argv = [
         "train",
         "--report_to",

@@ -30,7 +30,7 @@ train = [
     "scikit-learn>=1.9",
     "soundfile>=0.13",  # scripts and tests: writing WAV / FLAC
     "torch-audiomentations>=0.12",
-    "torchcodec>=0.17",  # audio decoding: datasets (EoTDataset), scripts/predict.py
+    "torchcodec>=0.17",  # audio decoding through datasets (EoTDataset, scripts)
     "wandb>=0.31",
 ]
 

@@ -12,7 +12,7 @@ tqdm==4.70.1
 # Audio: resampling (soxr is librosa's high-quality resampler), WAV / FLAC files in scripts and tests (soundfile)
 soundfile==0.14.0
 soxr==1.1.0
-# Audio decoding (datasets in EoTDataset, scripts/predict.py); matches torch 2.14. Needs FFmpeg's shared libraries,
+# Audio decoding through datasets (EoTDataset, scripts); matches torch 2.14. Needs FFmpeg's shared libraries,
 # which pip can't install: `apt install ffmpeg` (or conda-forge ffmpeg, as in environment.yml)
 torchcodec==0.17.0
 # Augmentation (installed with --no-deps so torch/torchaudio stay as preinstalled)

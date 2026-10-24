@@ -14,7 +14,7 @@ Model input is the **last 8 s** of 16 kHz mono audio; output is P(turn complete)
 | `src/turn_detection/data/` | Everything data: constants and paths (`__init__.py`); per-clip audio steps shared with serving: decoding, last-8 s crop, 8 kHz round trip, loudness normalization, padding (`audio.py`); the Hugging Face dataset, `EoTDataset`, `EoTCollator` (`dataset.py`); augmentation with torch-audiomentations (`transforms.py`) |
 | `src/turn_detection/model/` | The model only: `EoTConfig` (`config.py`), attention pooling (`modules.py`), `EoTModel`, a transformers `PreTrainedModel` with the encoder setup and layer weights (`model.py`) |
 | `src/turn_detection/train/` | HF `Trainer` setup (`trainer.py`), metrics with scikit-learn (`metrics.py`); `python -m turn_detection.train` |
-| `scripts/` | One-off runs: explore_dataset, samples, run_eval, predict |
+| `scripts/` | One-off runs: explore_dataset, samples, run_eval |
 | `tests/` | Tests for all of the above (CPU only, no network: tiny in-memory datasets stand in for the Hub) |
 | `results/` | Dataset and split exploration (`data_exploration/`, tracked) and listening samples (`results/samples/`, gitignored) |
 | `artifacts/` | Generated, gitignored: training runs |
@@ -38,7 +38,6 @@ python scripts/samples.py           # -> results/samples/ (WAVs + CSV), for list
 python -m turn_detection.train                         # smart-turn + TTD -> artifacts/runs/<timestamp>/
 python -m turn_detection.train --datasets ttd          # one of them
 python scripts/run_eval.py --model artifacts/runs/<run>/best --benchmark
-python scripts/predict.py --model artifacts/runs/<run>/best clip.wav
 ```
 
 | Step | Main flags | Disk | Time |
@@ -92,8 +91,6 @@ Real splits (smart-turn + TTD): train 52,893 + 333,284 / validation 5,877 + 37,6
 - **samples**: 15 random English clips per (label × synthetic) bucket, as WAVs at their original rate.
 - **run_eval**: metrics on the test split at 0.5 and at the model's val threshold (`config.threshold`),
   overall and by source (`dataset`), predicting through `Trainer.predict`; `--benchmark` times batch-1 inference.
-- **predict**: `EoTPredictor` (audio of any length and rate → P(turn complete)) and a small CLI that decodes files
-  like training (torchcodec, 16 kHz mono).
 
 Everything is deterministic: rows sorted by id, strata visited in sorted order, fixed seeds (default
 42), per-clip generators for augmentation.

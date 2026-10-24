@@ -43,7 +43,11 @@ class EoTTrainingArguments(TrainingArguments):
 
     # Trainer defaults for this project
     # Note: overridden fields keep the base class's annotations, which HfArgumentParser relies on
-    output_dir: str | None = field(default=None, metadata={"help": "default: artifacts/runs/<timestamp>"})
+    # Note: a default_factory, not None: TrainingArguments.__post_init__ turns None into "trainer_output"
+    output_dir: str | None = field(
+        default_factory=lambda: str(RUNS_DIR / datetime.now().strftime("%Y%m%d-%H%M%S")),
+        metadata={"help": "default: artifacts/runs/<timestamp>"},
+    )
     num_train_epochs: float = 5
     per_device_train_batch_size: int = 64
     per_device_eval_batch_size: int = 128
@@ -84,11 +88,9 @@ class SetEpochCallback(TrainerCallback):
 def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
     """Train, pick the validation threshold, save `best/`; returns the run directory. `model`: injected by tests,
     by default a new model on the pretrained `whisper` encoder."""
-    if args.output_dir is None:
-        args.output_dir = str(RUNS_DIR / datetime.now().strftime("%Y%m%d-%H%M%S"))
     args.run_name = args.run_name or Path(args.output_dir).name
-    # Note: the W&B callback ignores args.project and reads WANDB_PROJECT
-    os.environ.setdefault("WANDB_PROJECT", args.project)
+    # Note: the W&B callback ignores args.project and reads WANDB_PROJECT; the flag wins over the environment
+    os.environ["WANDB_PROJECT"] = args.project
     out = Path(args.output_dir)
 
     # Data
