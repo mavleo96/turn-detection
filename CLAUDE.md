@@ -52,7 +52,8 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
 - `scripts/`: `run_eval.py` (the test split, `--datasets`, per-source breakdown, `--benchmark`) and the exploration
   scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
   `load_dataset` in `dataset`, `explore_dataset` and `samples`).
-- `demo/`: separate browser mic -> Silero VAD + Nemotron streaming ASR harness (own env/tests).
+- The browser mic -> Silero VAD + Nemotron streaming ASR demo was removed from `main`; it is on the `backup` branch
+  and in git history (before the removal commit).
 - `serve/` (FastAPI + micro-batching, CPU Dockerfile) lives on the `serve` branch only (ignored on `main`).
 - Generated, gitignored: `artifacts/` (runs, models/untrained), `results/` (analyses; tracked: `data_exploration/`
   = `explore_dataset.py` output + `EXPLORE.md`, `ttd_vs_smart_turn/` = `FINDINGS.md`).
@@ -81,8 +82,9 @@ Layer weights (layers 1-4): ttd 0.27/0.20/0.21/0.32, smart-turn 0.15/0.16/0.25/0
 Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TTD FPR ~0.28-0.30 vs FNR ~0.12).
 
 ## Data facts worth remembering
-- TTD clips end where its VAD fires (Silero, 224 ms after speech end, 25 dB gate); the demo VAD (threshold 0.5,
-  min_silence 200 ms → fires after 256 ms) does not match yet. Serving must send the turn so far, ending at the stop.
+- TTD clips end where its VAD fires (Silero, 224 ms after speech end, 25 dB gate); the demo VAD (`backup` branch;
+  threshold 0.5, min_silence 200 ms → fires after 256 ms) does not match yet. Serving must send the turn so far,
+  ending at the stop.
 - TTD: SpokenWOZ 58% complete vs Seamless 42% (source-only AUC 0.58, not rebalanced); Seamless is ~24 dB quieter
   than SpokenWOZ before normalization; splits share no conversation (Seamless: no person); Hub rows are ordered by
   source (SpokenWOZ first), so never take "the first N rows".

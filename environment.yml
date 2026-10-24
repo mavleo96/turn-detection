@@ -1,7 +1,8 @@
 # Conda env `turn`, exported with `conda env export -n turn --no-builds` (2026-10-24), for training, scripts,
-# tests, serving and the demo. Changes to the raw export: the `prefix:` line and the local package
-# (turn-detection) are removed, torch comes from the PyTorch CUDA 13.0 index (+cu130 build), and ffmpeg (the shared
-# libraries torchcodec loads; the instance had them from Ubuntu's ffmpeg 6.1 apt package) and torchcodec are added.
+# tests and serving (and the demo, removed from main; see the backup branch). Changes to the raw export: the
+# `prefix:` line and the local package (turn-detection) are removed, torch comes from the PyTorch CUDA 13.0 index
+# (+cu130 build), and ffmpeg (the shared libraries torchcodec loads; the instance had them from Ubuntu's ffmpeg 6.1
+# apt package) and torchcodec are added.
 #   conda env create -f environment.yml && conda activate turn && pip install --no-deps -e .
 name: turn
 channels:

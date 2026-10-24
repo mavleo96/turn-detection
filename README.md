@@ -20,7 +20,6 @@ phone calls + Seamless Interaction).
 | `tests/` | Tests for all of the above (CPU only, no network: tiny in-memory datasets stand in for the Hub) |
 | `results/` | Analyses: `data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`), `ttd_vs_smart_turn/` (`FINDINGS.md`), both tracked; listening samples (`samples/`, gitignored) |
 | `artifacts/` | Generated, gitignored: training runs |
-| [`demo/`](demo/README.md) | Self-contained demo: live browser mic → streaming ASR + VAD with per-stage latency measurement |
 
 `pip install -e ".[train]"` installs everything for training, evaluation, scripts and tests; `pip install .` only the
 core (model + audio preprocessing) for serving.
