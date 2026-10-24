@@ -16,6 +16,7 @@ class EoTConfig(PretrainedConfig):
         dropout: float = 0.1,
         threshold: float = 0.5,
         padding: str = "left",
+        narrowband: bool = True,
         encoder: dict | None = None,
         **kwargs,
     ):
@@ -26,6 +27,7 @@ class EoTConfig(PretrainedConfig):
         self.dropout = dropout
         self.threshold = threshold  # P(complete) >= threshold -> "turn complete"; set from val after training
         self.padding = padding  # side short clips were zero-padded on in training; inference must match
+        self.narrowband = narrowband  # audio band-limited to 4 kHz (8 kHz round trip) in training; inference must match
 
         # The Whisper encoder's config: derived from `whisper` for a new config, the saved one in from_pretrained.
         if encoder is None:

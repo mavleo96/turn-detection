@@ -62,18 +62,21 @@ not a persistent volume on this instance: after a recycle the first step downloa
   (mostly `synthetic == False`) with ≥ 300 English train-split clips, `heldout` = its train-split
   clips, `train`/`val` = the manifests without it. Manifests hold ids + metadata; fold files ids only.
 - **`data.dataset.EoTDataset(source, ids, augment)`** maps ids to rows of the cached split and, per
-  item, decodes the FLAC (soundfile, ~3 ms) to 16 kHz mono, keeps the last 8 s (left-padded with zeros
-  when shorter) and optionally augments. Items are `{"input_values": waveform, "labels"}`; no
+  item, decodes the FLAC (soundfile, ~3 ms) to 16 kHz mono, keeps the last 8 s, band-limits it to 4 kHz
+  (`narrowband`: a 16 → 8 → 16 kHz round trip, ~1.5 ms), optionally augments, and only then zero-pads
+  to 8 s (on the left by default), so the noise level follows the audio, not the padding. Items are `{"input_values": waveform, "labels"}`; no
   preprocessed copies of the audio.
 - **`data.dataset.EoTCollator(feature_extractor)`** turns a batch of items into the model's inputs,
   `{"input_features": (B, 80, 800), "labels": (B,)}`, with `WhisperFeatureExtractor` (clip by clip:
   its batched path is ~2.4× slower on a CPU worker). The `Trainer` uses it as `data_collator`
   (`remove_unused_columns=False`, so the waveforms reach it).
 - **`data.transforms`** builds the training augmentation with `torch-audiomentations`:
-  `Compose([Gain(±6 dB, p=1), AddColoredNoise(15–40 dB SNR, white, p=0.3)])` (validation and test: none).
+  `Compose([Gain(±6 dB, p=1), AddColoredNoise(20–40 dB SNR, white to brown, p=0.3)])` (validation and
+  test: none).
   It draws from torch's global generator, so the dataset seeds it per (seed, epoch, item) inside
   `torch.random.fork_rng()`: reproducible regardless of workers, without touching the caller's RNG.
-- **Evaluation** scores the test manifest's clips as recorded, at 16 kHz.
+- **Evaluation** scores the test manifest's clips with the same preprocessing as training (padding side and
+  `narrowband` come from the model's config), without augmentation.
 
 Real splits (seed 42): train 59,221 / val 6,581 / test 7,820 English clips; folds `liva_1` (30,922 held
 out), `midcentury_1` (8,489), `human_5` (3,527), `human_convcollector_1` (679).
@@ -98,7 +101,7 @@ Everything is deterministic: rows sorted by id, strata visited in sorted order, 
 ```
 waveform (128000,) -> WhisperFeatureExtractor (80, 800) -> [batch] -> Whisper Tiny encoder (frozen in training)
   -> hidden states of its 4 layers (4 x (B, 400, 384)) -> learned softmax-weighted sum (B, 400, 384)
-  -> attention pooling over time (B, 384) -> MLP 384-256-1 -> logit -> sigmoid = P(turn complete)
+  -> attention pooling over time (B, 384) -> MLP 384-64-1 -> logit -> sigmoid = P(turn complete)
 ```
 
 - Features come from `WhisperFeatureExtractor` sized for 8 s (loaded from `--whisper` with
@@ -107,13 +110,13 @@ waveform (128000,) -> WhisperFeatureExtractor (80, 800) -> [batch] -> Whisper Ti
 - The pretrained `openai/whisper-tiny` encoder is rebuilt for 8 s: 400 positions instead of 1500,
   keeping the first 400 rows of its fixed sinusoidal position table. 7.9M parameters in total. The
   model itself freezes nothing: training freezes the encoder (`--freeze_encoder`, default true), which
-  leaves 99k trainable parameters (layer weights, pooling, MLP).
+  leaves 25k trainable parameters (layer weights, pooling, MLP).
 - **Layer mix** (`EoTModel.layer_weights`): one learned weight per encoder layer (the embedding output is
   excluded), softmax-normalized and initialized equal. Each layer's hidden states are layer-normalized
   (no parameters) before the sum: their scales differ, and only the last has the encoder's final
   LayerNorm. The learned weights show which layers carry the turn-end signal.
 - **Head**: attention pooling (one learned score per frame, softmax over time) and a 2-layer MLP
-  (384 → 256, GELU, dropout 0.1, → 1). The logit goes into BCE-with-logits for training; the sigmoid
+  (384 → 64, GELU, dropout 0.1, → 1). The logit goes into BCE-with-logits for training; the sigmoid
   of it is P(turn complete).
 - `EoTModel` is a transformers `PreTrainedModel`: `save_pretrained` / `from_pretrained` store the encoder
   config, head settings and the val-chosen `threshold` in `config.json`, so loading needs no download.
@@ -135,7 +138,8 @@ stored in `best/config.json`.
 | Precision | bf16 autocast, grad clipping at 1.0 | The RTX 3060 supports bf16; no loss scaling needed |
 | Data loading | 16 workers (`dataloader_num_workers`) | Decode + augment + collate (features): ~1,000 clips/s with 16 workers. With the frozen encoder the GPU could take ~1,350, so data loading is the limit |
 | Loss | BCE with logits, no class weights | Labels are ~50/50 |
-| Augmentation | torch-audiomentations: gain ±6 dB, white noise p=0.3 at 15–40 dB SNR (measured against the whole window), all at 16 kHz | Robustness to level and background noise; the clip end is never cut or moved |
+| Preprocessing | last 8 s, 8 kHz round trip (`--narrowband`, default true), zero-padded on the left (`--padding`); both saved in the model's config | The planned SpokenWOZ (8 kHz telephone) + Seamless data must not be separable by bandwidth; evaluation and inference preprocess the same way |
+| Augmentation | torch-audiomentations: gain ±6 dB, colored noise (white to brown, `f_decay` 0–2) p=0.3 at 20–40 dB SNR, measured against the unpadded clip | Robustness to level and background noise; the clip end is never cut or moved |
 | Model selection | evaluate and save every epoch, keep the best by val ROC AUC (`load_best_model_at_end`); the val threshold maximizing F1 goes into `best/config.json` | Test is never used for tuning |
 
 Measured on the RTX 3060 (frozen encoder): a batch-64 bf16 training step takes ~47 ms (~0.5 GB peak).

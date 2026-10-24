@@ -22,8 +22,9 @@ class AugmentConfig:
     """Training augmentation settings (logged with the run)."""
 
     gain_db: float = 6.0  # uniform random gain in [-gain_db, +gain_db]
-    noise_p: float = 0.3  # probability of added white noise ...
-    snr_db: tuple[float, float] = (15.0, 40.0)  # ... at an SNR drawn from this range (vs. the whole clip)
+    noise_p: float = 0.3  # probability of added colored noise ...
+    snr_db: tuple[float, float] = (20.0, 40.0)  # ... at an SNR drawn from this range (vs. the unpadded clip) ...
+    f_decay: tuple[float, float] = (0.0, 2.0)  # ... and a color drawn from this range: 0 white, 1 pink, 2 brown
 
 
 def build_augment(cfg: AugmentConfig | None) -> Compose | None:
@@ -44,11 +45,11 @@ def build_augment(cfg: AugmentConfig | None) -> Compose | None:
 
     if cfg.noise_p > 0:
         transforms.append(
-            AddColoredNoise(  # f_decay 0: white noise
+            AddColoredNoise(
                 min_snr_in_db=cfg.snr_db[0],
                 max_snr_in_db=cfg.snr_db[1],
-                min_f_decay=0.0,
-                max_f_decay=0.0,
+                min_f_decay=cfg.f_decay[0],
+                max_f_decay=cfg.f_decay[1],
                 p=cfg.noise_p,
                 output_type="dict",
             )

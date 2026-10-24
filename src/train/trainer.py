@@ -42,13 +42,18 @@ class EoTTrainingArguments(TrainingArguments):
     whisper: str = field(default="openai/whisper-tiny", metadata={"help": "pretrained Whisper for the encoder"})
     freeze_encoder: bool = field(default=True, metadata={"help": "train only the layer weights, pooling and MLP"})
     dropout: float = 0.1
+
     # data (str paths: TrainingArguments are serialized to JSON for wandb)
     manifests_dir: str = str(MANIFESTS_DIR)
     folds_dir: str = str(FOLDS_DIR)
     fold: str | None = field(default=None, metadata={"help": "hold out this human source (folds/<fold>/)"})
     max_train_samples: int | None = field(default=None, metadata={"help": "only the first N training clips"})
-    # augmentation
+
+    # preprocessing (also stored in the saved model's config)
     padding: str = field(default="left", metadata={"help": "zero-pad short clips on the left or the right"})
+    narrowband: bool = field(default=True, metadata={"help": "8 kHz round trip: band-limit all audio to 4 kHz"})
+
+    # augmentation
     augment: bool = True
     gain_db: float = AugmentConfig.gain_db
     noise_p: float = AugmentConfig.noise_p
@@ -87,20 +92,35 @@ class SetEpochCallback(TrainerCallback):
 
 def load_ids(args: EoTTrainingArguments) -> dict[str, pd.Series]:
     """Clip ids of {train, val[, heldout]} from the manifests, or from the fold's files."""
-    src = Path(args.folds_dir) / args.fold if args.fold else Path(args.manifests_dir)
-    names = ["train", "val"] + (["heldout"] if args.fold else [])
-    ids = {name: pd.read_parquet(src / f"{name}.parquet", columns=["id"])["id"] for name in names}
+    if args.fold:
+        src = Path(args.folds_dir) / args.fold
+        names = ["train", "val", "heldout"]
+    else:
+        src = Path(args.manifests_dir)
+        names = ["train", "val"]
+
+    ids = {}
+    for name in names:
+        ids[name] = pd.read_parquet(src / f"{name}.parquet", columns=["id"])["id"]
+
     if args.max_train_samples is not None:
         ids["train"] = ids["train"].iloc[: args.max_train_samples]
+
     return ids
 
 
 def default_output_dir(fold: str | None) -> str:
-    return str(RUNS_DIR / (datetime.now().strftime("%Y%m%d-%H%M%S") + (f"-fold-{fold}" if fold else "")))
+    """artifacts/runs/<timestamp>[-fold-<fold>]"""
+    name = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if fold:
+        name += f"-fold-{fold}"
+    return str(RUNS_DIR / name)
 
 
 def predict_probs(trainer: Trainer, dataset: EoTDataset) -> np.ndarray:
-    return sigmoid(trainer.predict(dataset).predictions)
+    """P(turn complete) for every clip of `dataset`."""
+    logits = trainer.predict(dataset).predictions
+    return sigmoid(logits)
 
 
 def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFDataset | None = None) -> Path:
@@ -109,19 +129,37 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFD
     if args.output_dir is None:
         args.output_dir = default_output_dir(args.fold)
     args.run_name = args.run_name or Path(args.output_dir).name
-    source = load_split("train") if source is None else source
+    out = Path(args.output_dir)
+
+    # Data
+    if source is None:
+        source = load_split("train")
     ids = load_ids(args)
-    augment = AugmentConfig(gain_db=args.gain_db, noise_p=args.noise_p) if args.augment else None
+
+    augment = None
+    if args.augment:
+        augment = build_augment(AugmentConfig(gain_db=args.gain_db, noise_p=args.noise_p))
+    if augment is not None and args.dataloader_persistent_workers:
+        # SetEpochCallback only reaches the workers because they are recreated every epoch.
+        raise ValueError("dataloader_persistent_workers would repeat the same augmentation every epoch")
+
+    preprocessing = {"padding": args.padding, "narrowband": args.narrowband}
+    train_ds = EoTDataset(source, ids["train"], augment, seed=args.seed, **preprocessing)
+    val_ds = EoTDataset(source, ids["val"], seed=args.seed, **preprocessing)
+
     # The front end of the same Whisper as the encoder, sized for the model's window instead of 30 s.
     feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=WINDOW_S)
-    train_ds = EoTDataset(source, ids["train"], build_augment(augment), seed=args.seed, padding=args.padding)
-    val_ds = EoTDataset(source, ids["val"], seed=args.seed, padding=args.padding)
 
+    # Model
     if model is None:
         model = EoTModel.from_whisper(args.whisper, dropout=args.dropout)
-    model.config.padding = args.padding  # saved with the model, so evaluation and inference pad the same way
+    # Saved with the model, so evaluation and inference preprocess the same way.
+    model.config.padding = args.padding
+    model.config.narrowband = args.narrowband
     if args.freeze_encoder:
         model.encoder.requires_grad_(False)
+
+    # Training
     trainer = Trainer(
         model=model,
         args=args,
@@ -134,16 +172,23 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFD
     )
     trainer.train()  # ends with the best epoch loaded (load_best_model_at_end)
 
+    # Decision threshold: chosen on val, saved in the model's config
     val_probs = predict_probs(trainer, val_ds)
     threshold = best_f1_threshold(val_ds.labels, val_probs)
     trainer.model.config.threshold = threshold
-    out = Path(args.output_dir)
     trainer.save_model(str(out / "best"))
-    results = {f"val_at_threshold_{k}": v for k, v in eot_metrics(val_ds.labels, val_probs, threshold).items()}
+
+    # Final metrics at that threshold: val, and the held-out source for a fold
+    val_metrics = eot_metrics(val_ds.labels, val_probs, threshold)
+    results = {f"val_at_threshold_{k}": v for k, v in val_metrics.items()}
+
     if args.fold:
-        heldout_ds = EoTDataset(source, ids["heldout"], seed=args.seed, padding=args.padding)
-        heldout = eot_metrics(heldout_ds.labels, predict_probs(trainer, heldout_ds), threshold)
-        results |= {f"heldout_{k}": v for k, v in heldout.items()}
+        heldout_ds = EoTDataset(source, ids["heldout"], seed=args.seed, **preprocessing)
+        heldout_probs = predict_probs(trainer, heldout_ds)
+        heldout_metrics = eot_metrics(heldout_ds.labels, heldout_probs, threshold)
+        results |= {f"heldout_{k}": v for k, v in heldout_metrics.items()}
+
     trainer.log(results)  # also to wandb
     trainer.save_metrics("final", results)
+
     return out

@@ -22,7 +22,7 @@ import torch
 from transformers import Trainer, TrainingArguments, WhisperFeatureExtractor
 
 from data.constants import MANIFESTS_DIR, SAMPLE_RATE, WINDOW_S
-from data.dataset import EoTCollator, EoTDataset, load_split
+from data.dataset import EoTCollator, EoTDataset, crop_window, load_split, narrowband, pad_window
 from model import EoTModel
 from train.metrics import breakdown, eot_metrics
 from train.trainer import predict_probs
@@ -34,7 +34,7 @@ def evaluate_test(
     model: EoTModel, feature_extractor: WhisperFeatureExtractor, source, manifest: pd.DataFrame, args
 ) -> tuple[dict, pd.DataFrame]:
     """Metrics on the test clips; `source` is the HF test split, `manifest` the clips (scripts/split.py)."""
-    dataset = EoTDataset(source, manifest["id"], padding=model.config.padding)
+    dataset = EoTDataset(source, manifest["id"], padding=model.config.padding, narrowband=model.config.narrowband)
     with tempfile.TemporaryDirectory() as tmp:
         trainer = Trainer(
             model=model,
@@ -72,15 +72,19 @@ def evaluate_test(
 
 @torch.no_grad()
 def benchmark(model: EoTModel, feature_extractor: WhisperFeatureExtractor, device: str, runs: int = 100) -> dict:
-    """Latency of one decision (batch 1), as a voice agent would call it at every pause: feature
-    extraction of the last 8 s (CPU) + the model on `device`."""
+    """Latency of one decision (batch 1), as a voice agent would call it at every pause: preprocessing and
+    feature extraction of the last 8 s (CPU) + the model on `device`."""
     model = model.to(device).eval()
     audio = np.zeros(WINDOW_S * SAMPLE_RATE, dtype=np.float32)
     sync = torch.cuda.synchronize if device.startswith("cuda") else (lambda: None)
 
     def decide():
-        features = feature_extractor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt").input_features.to(device)
-        model(input_features=features)
+        x = crop_window(audio)
+        if model.config.narrowband:
+            x = narrowband(x)
+        window = pad_window(x, padding=model.config.padding)
+        features = feature_extractor(window, sampling_rate=SAMPLE_RATE, return_tensors="pt").input_features
+        model(input_features=features.to(device))
         sync()
 
     for _ in range(10):

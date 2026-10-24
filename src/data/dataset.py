@@ -10,10 +10,11 @@ decoding would need torchcodec.
     fe = WhisperFeatureExtractor.from_pretrained("openai/whisper-tiny", chunk_length=8)  # sized for 8 s, not 30 s
     batch = EoTCollator(fe)([train[0], train[1]])         # {"input_features": (2, 80, 800), "labels"}
 
-Each item is decoded (16 kHz mono), cut to the last 8 s (zero-padded when shorter, on the left by default) and
-optionally augmented (see data.transforms); the collator runs `WhisperFeatureExtractor` (sized for 8 s)
-on the whole batch. Augmentation is seeded from (seed, epoch, item), so a run is reproducible
-regardless of DataLoader worker count or scheduling.
+Each item is decoded (16 kHz mono), cut to the last 8 s, band-limited to telephone bandwidth (`narrowband`,
+on by default), optionally augmented (see data.transforms), and only then zero-padded to 8 s (on the left by
+default), so the augmentation's noise level follows the speech, not the padding. The collator runs
+`WhisperFeatureExtractor` (sized for 8 s) on the whole batch. Augmentation is seeded from (seed, epoch, item),
+so a run is reproducible regardless of DataLoader worker count or scheduling.
 """
 
 import io
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import soundfile as sf
+import soxr
 import torch
 from datasets import Audio, load_dataset
 from datasets import Dataset as HFDataset
@@ -65,17 +67,35 @@ def decode(audio_bytes: bytes) -> tuple[np.ndarray, int]:
     return x.mean(axis=1), sr
 
 
-def last_window(x: np.ndarray, padding: str = "left") -> np.ndarray:
-    """The last 8 s (WINDOW_S). Shorter input is zero-padded on the `padding` side: "left" keeps the clip end
-    at the window end, "right" keeps the clip start at the window start."""
+def crop_window(x: np.ndarray) -> np.ndarray:
+    """The last 8 s (WINDOW_S) of the clip, or all of it when shorter (not padded: see pad_window)."""
+    n = WINDOW_S * SAMPLE_RATE
+    x = np.asarray(x, dtype=np.float32)
+    return x[max(len(x) - n, 0) :].copy()
+
+
+def narrowband(x: np.ndarray) -> np.ndarray:
+    """Telephone bandwidth: a 16 kHz -> 8 kHz -> 16 kHz round trip, which removes everything above 4 kHz.
+    Applied to every clip (train, eval and inference) so 8 kHz and 16 kHz sources look the same."""
+    if len(x) == 0:
+        return x
+
+    down = soxr.resample(x, SAMPLE_RATE, SAMPLE_RATE // 2, quality="HQ")
+    up = soxr.resample(down, SAMPLE_RATE // 2, SAMPLE_RATE, quality="HQ")
+
+    y = np.zeros_like(x)
+    n = min(len(x), len(up))  # the round trip can be off by a sample
+    y[:n] = up[:n]
+    return y
+
+
+def pad_window(x: np.ndarray, padding: str = "left") -> np.ndarray:
+    """Zero-pad a cropped clip to 8 s on the `padding` side: "left" keeps the clip end at the window end,
+    "right" keeps the clip start at the window start."""
     if padding not in ("left", "right"):
         raise ValueError(f"padding must be 'left' or 'right', got {padding!r}")
 
     n = WINDOW_S * SAMPLE_RATE
-    x = np.asarray(x, dtype=np.float32)
-    if len(x) >= n:
-        return x[len(x) - n :].copy()
-
     zeros = np.zeros(n - len(x), dtype=np.float32)
     if padding == "left":
         return np.concatenate([zeros, x])
@@ -93,6 +113,7 @@ class EoTDataset(Dataset):
         augment: Compose | None = None,
         seed: int = 0,
         padding: str = "left",
+        narrowband: bool = True,
     ):
         self.rows = rows_for_ids(ds, ids)
 
@@ -102,6 +123,7 @@ class EoTDataset(Dataset):
 
         self.augment = augment
         self.padding = padding
+        self.narrowband = narrowband
         self.seed = seed
         self.epoch = 0
 
@@ -118,9 +140,12 @@ class EoTDataset(Dataset):
         if sr != SAMPLE_RATE:
             raise ValueError(f"expected {SAMPLE_RATE} Hz audio, got {sr} Hz (row {row})")
 
-        x = last_window(x, padding=self.padding)
+        x = crop_window(x)
+        if self.narrowband:
+            x = narrowband(x)
         if self.augment is not None:
-            x = apply_augment(self.augment, x, (self.seed, self.epoch, i))
+            x = apply_augment(self.augment, x, (self.seed, self.epoch, i))  # before padding: SNR vs. the speech
+        x = pad_window(x, padding=self.padding)
 
         return {"input_values": x, "labels": self.labels[i]}
 
