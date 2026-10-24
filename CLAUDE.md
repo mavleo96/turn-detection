@@ -78,3 +78,12 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
 - Make `--dataset ttd,smart-turn` the default; threshold for a target FPR instead of best F1.
 - Unfreeze the encoder with a separate low encoder LR (the trainer has one LR for all params today).
 - Re-cut smart-turn clips to VAD-style endings; match the demo VAD to the dataset's.
+
+## Known issues (deferred)
+- `EoTConfig` ignores a passed or saved encoder config: `encoder_config` is always re-derived with
+  `WhisperConfig.from_pretrained(whisper)` (since 2462223). Loading a checkpoint works only if `whisper` is
+  reachable: it fails offline with an empty HF cache (e.g. a serving container) or when a local Whisper dir is gone.
+  It also breaks 2 tests (`tests/helpers.py` passes `encoder=` for a tiny 2-layer encoder, which is ignored, so the
+  real Whisper Tiny is downloaded). Fix: `encoder_config: dict | None = None` parameter and
+  `self.encoder_config = encoder_config or WhisperConfig.from_pretrained(whisper).to_dict()`; helpers pass
+  `encoder_config=`.

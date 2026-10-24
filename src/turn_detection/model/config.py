@@ -27,6 +27,8 @@ class EoTConfig(PretrainedConfig):
         self.narrowband = narrowband
         self.loudness_dbfs = loudness_dbfs
 
+        # TODO: take the saved/passed encoder config instead of re-deriving it: loading fails offline or when a local
+        # `whisper` dir is gone, and tests/helpers.py's tiny encoder is ignored (see CLAUDE.md, Known issues)
         self.encoder_config = WhisperConfig.from_pretrained(whisper).to_dict()
 
     @property
