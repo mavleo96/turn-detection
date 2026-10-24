@@ -2,10 +2,7 @@
 
 from transformers import PretrainedConfig, WhisperConfig
 
-from data.constants import SAMPLE_RATE, WINDOW_S
-
-HOP_LENGTH = 160  # Whisper features: 10 ms hop
-CONV_STRIDE = 2  # Whisper's second conv halves the frame rate
+CONV_STRIDE = 2  # WhisperEncoder's conv2 halves the frame rate (hard-coded there, not in WhisperConfig)
 
 
 class EoTConfig(PretrainedConfig):
@@ -13,25 +10,29 @@ class EoTConfig(PretrainedConfig):
 
     def __init__(
         self,
-        encoder: dict | None = None,
         whisper: str = "openai/whisper-tiny",
-        window_s: int = WINDOW_S,
-        head_hidden: int = 256,
+        input_frames: int = 800,
+        head_hidden: int = 64,
         dropout: float = 0.1,
         threshold: float = 0.5,
         padding: str = "left",
+        encoder: dict | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.encoder = encoder if encoder is not None else WhisperConfig().to_dict()  # Whisper encoder config
-        self.whisper = whisper  # where the pretrained encoder came from
-        self.window_s = window_s
+        self.whisper = whisper  # pretrained Whisper the encoder comes from (a Hub id or a local directory)
+        self.input_frames = input_frames  # log-mel frames per input, 10 ms each: 800 = the last 8 s
         self.head_hidden = head_hidden
         self.dropout = dropout
         self.threshold = threshold  # P(complete) >= threshold -> "turn complete"; set from val after training
         self.padding = padding  # side short clips were zero-padded on in training; inference must match
 
+        # The Whisper encoder's config: derived from `whisper` for a new config, the saved one in from_pretrained.
+        if encoder is None:
+            encoder = WhisperConfig.from_pretrained(whisper).to_dict()
+        self.encoder = encoder
+
     @property
     def n_positions(self) -> int:
-        """Encoder positions for one window: 8 s -> 800 mel frames -> 400 after the stride-2 conv."""
-        return self.window_s * SAMPLE_RATE // HOP_LENGTH // CONV_STRIDE
+        """Encoder positions for one input: 800 mel frames -> 400 after the stride-2 conv."""
+        return self.input_frames // CONV_STRIDE

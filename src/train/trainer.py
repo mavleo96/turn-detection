@@ -41,7 +41,6 @@ class EoTTrainingArguments(TrainingArguments):
     # model (also stored in the saved model's config)
     whisper: str = field(default="openai/whisper-tiny", metadata={"help": "pretrained Whisper for the encoder"})
     freeze_encoder: bool = field(default=True, metadata={"help": "train only the layer weights, pooling and MLP"})
-    head_hidden: int = 256
     dropout: float = 0.1
     # data (str paths: TrainingArguments are serialized to JSON for wandb)
     manifests_dir: str = str(MANIFESTS_DIR)
@@ -118,7 +117,7 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None, source: HFD
     val_ds = EoTDataset(source, ids["val"], seed=args.seed, pad=args.padding)
 
     if model is None:
-        model = EoTModel.from_whisper(args.whisper, head_hidden=args.head_hidden, dropout=args.dropout)
+        model = EoTModel.from_whisper(args.whisper, dropout=args.dropout)
     model.config.padding = args.padding  # saved with the model, so evaluation and inference pad the same way
     if args.freeze_encoder:
         model.encoder.requires_grad_(False)

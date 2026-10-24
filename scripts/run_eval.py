@@ -21,7 +21,7 @@ import pandas as pd
 import torch
 from transformers import Trainer, TrainingArguments, WhisperFeatureExtractor
 
-from data.constants import MANIFESTS_DIR, SAMPLE_RATE
+from data.constants import MANIFESTS_DIR, SAMPLE_RATE, WINDOW_S
 from data.dataset import EoTCollator, EoTDataset, load_split
 from model import EoTModel
 from train.metrics import breakdown, eot_metrics
@@ -75,7 +75,7 @@ def benchmark(model: EoTModel, feature_extractor: WhisperFeatureExtractor, devic
     """Latency of one decision (batch 1), as a voice agent would call it at every pause: feature
     extraction of the last 8 s (CPU) + the model on `device`."""
     model = model.to(device).eval()
-    audio = np.zeros(model.config.window_s * SAMPLE_RATE, dtype=np.float32)
+    audio = np.zeros(WINDOW_S * SAMPLE_RATE, dtype=np.float32)
     sync = torch.cuda.synchronize if device.startswith("cuda") else (lambda: None)
 
     def decide():
