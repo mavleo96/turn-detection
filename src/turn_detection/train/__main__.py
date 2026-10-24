@@ -1,9 +1,9 @@
 """Train the EoT classifier with the Hugging Face Trainer; logs to Weights & Biases (`wandb login` once).
 
 Run (from the repo root, after scripts/split.py):
-  python -m train                                          # -> artifacts/runs/<timestamp>/
-  python -m train --fold liva_1                            # train without liva_1, then score it (heldout)
-  python -m train --max_steps 20 --max_train_samples 512 --report_to none   # quick smoke run
+  python -m turn_detection.train                    # -> artifacts/runs/<timestamp>/
+  python -m turn_detection.train --fold liva_1      # train without liva_1, then score it (heldout)
+  python -m turn_detection.train --max_steps 20 --max_train_samples 512 --report_to none   # quick smoke run
 
 Flags: the fields of EoTTrainingArguments in train/trainer.py: this project's model / data /
 augmentation settings plus every transformers TrainingArguments flag (--learning_rate, --report_to, ...).

@@ -30,8 +30,8 @@ import pandas as pd
 import soundfile as sf
 from datasets import Features, Value
 
-from data.constants import LANGUAGE, META_COLUMNS, REPOS, RESULTS_DIR, WINDOW_S
-from data.dataset import load_split
+from turn_detection.data.constants import LANGUAGE, META_COLUMNS, REPOS, RESULTS_DIR, WINDOW_S
+from turn_detection.data.dataset import load_split
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 (after selecting the backend)

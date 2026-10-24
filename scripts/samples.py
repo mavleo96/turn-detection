@@ -15,8 +15,9 @@ import numpy as np
 import pandas as pd
 import soundfile as sf
 
-from data.constants import RESULTS_DIR, SEED
-from data.dataset import decode, load_metadata, load_split, rows_for_ids
+from turn_detection.data.audio import decode
+from turn_detection.data.constants import RESULTS_DIR, SEED
+from turn_detection.data.dataset import load_metadata, load_split, rows_for_ids
 
 
 def bucket_name(endpoint: bool, synthetic: bool) -> str:

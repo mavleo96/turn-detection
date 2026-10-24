@@ -24,10 +24,10 @@ from datasets import Dataset as HFDataset
 from transformers import Trainer, TrainerCallback, TrainingArguments, WhisperFeatureExtractor
 from transformers.trainer_utils import IntervalStrategy, SaveStrategy, SchedulerType
 
-from data.constants import FOLDS_DIR, MANIFESTS_DIR, RUNS_DIR, WINDOW_S
-from data.dataset import EoTCollator, EoTDataset, load_split
-from data.transforms import AugmentConfig, build_augment
-from model import EoTModel
+from turn_detection.data.constants import FOLDS_DIR, MANIFESTS_DIR, RUNS_DIR, WINDOW_S
+from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
+from turn_detection.data.transforms import AugmentConfig, build_augment
+from turn_detection.model import EoTModel
 
 from .metrics import best_f1_threshold, compute_metrics, eot_metrics, sigmoid
 

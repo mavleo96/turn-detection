@@ -23,8 +23,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from data.constants import FOLDS_DIR, MANIFESTS_DIR, SEED
-from data.dataset import load_metadata
+from turn_detection.data.constants import FOLDS_DIR, MANIFESTS_DIR, SEED
+from turn_detection.data.dataset import load_metadata
 
 MANIFEST_COLUMNS = ["id", "endpoint_bool", "synthetic", "midfiller", "endfiller", "dataset"]
 

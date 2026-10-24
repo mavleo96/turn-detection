@@ -10,21 +10,19 @@ decoding would need torchcodec.
     fe = WhisperFeatureExtractor.from_pretrained("openai/whisper-tiny", chunk_length=8)  # sized for 8 s, not 30 s
     batch = EoTCollator(fe)([train[0], train[1]])         # {"input_features": (2, 80, 800), "labels"}
 
-Each item is decoded (16 kHz mono), cut to the last 8 s, band-limited to telephone bandwidth (`narrowband`,
-on by default), optionally augmented (see data.transforms), and only then zero-padded to 8 s (on the left by
-default), so the augmentation's noise level follows the speech, not the padding. The collator runs
-`WhisperFeatureExtractor` (sized for 8 s) on the whole batch. Augmentation is seeded from (seed, epoch, item),
-so a run is reproducible regardless of DataLoader worker count or scheduling.
+Each item is decoded (16 kHz mono), cut to the last 8 s, band-limited to telephone bandwidth (`narrowband`, on
+by default), optionally augmented (see data.transforms), and only then zero-padded to 8 s (on the left by
+default; the per-clip audio steps are in data.audio), so the augmentation's noise level follows the speech,
+not the padding. The collator runs `WhisperFeatureExtractor` (sized for 8 s) on the whole batch. Augmentation
+is seeded from (seed, epoch, item), so a run is reproducible regardless of DataLoader worker count or
+scheduling.
 """
 
-import io
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import soundfile as sf
-import soxr
 import torch
 from datasets import Audio, load_dataset
 from datasets import Dataset as HFDataset
@@ -32,7 +30,8 @@ from torch.utils.data import Dataset
 from torch_audiomentations import Compose
 from transformers import WhisperFeatureExtractor
 
-from .constants import LANGUAGE, META_COLUMNS, REPOS, SAMPLE_RATE, WINDOW_S
+from .audio import crop_window, decode, narrowband, pad_window
+from .constants import LANGUAGE, META_COLUMNS, REPOS, SAMPLE_RATE
 from .transforms import apply_augment
 
 
@@ -59,47 +58,6 @@ def rows_for_ids(ds: HFDataset, ids: Sequence[str]) -> np.ndarray:
         raise KeyError(f"{int(missing.sum())} ids are not in the dataset, e.g. {ids[missing].iloc[0]}")
 
     return row_of_id.loc[ids.to_numpy()].to_numpy()
-
-
-def decode(audio_bytes: bytes) -> tuple[np.ndarray, int]:
-    """Encoded audio (FLAC, WAV, ...) -> mono float32 at its original sample rate."""
-    x, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)  # (T, channels)
-    return x.mean(axis=1), sr
-
-
-def crop_window(x: np.ndarray) -> np.ndarray:
-    """The last 8 s (WINDOW_S) of the clip, or all of it when shorter (not padded: see pad_window)."""
-    n = WINDOW_S * SAMPLE_RATE
-    x = np.asarray(x, dtype=np.float32)
-    return x[max(len(x) - n, 0) :].copy()
-
-
-def narrowband(x: np.ndarray) -> np.ndarray:
-    """Telephone bandwidth: a 16 kHz -> 8 kHz -> 16 kHz round trip, which removes everything above 4 kHz.
-    Applied to every clip (train, eval and inference) so 8 kHz and 16 kHz sources look the same."""
-    if len(x) == 0:
-        return x
-
-    down = soxr.resample(x, SAMPLE_RATE, SAMPLE_RATE // 2, quality="HQ")
-    up = soxr.resample(down, SAMPLE_RATE // 2, SAMPLE_RATE, quality="HQ")
-
-    y = np.zeros_like(x)
-    n = min(len(x), len(up))  # the round trip can be off by a sample
-    y[:n] = up[:n]
-    return y
-
-
-def pad_window(x: np.ndarray, padding: str = "left") -> np.ndarray:
-    """Zero-pad a cropped clip to 8 s on the `padding` side: "left" keeps the clip end at the window end,
-    "right" keeps the clip start at the window start."""
-    if padding not in ("left", "right"):
-        raise ValueError(f"padding must be 'left' or 'right', got {padding!r}")
-
-    n = WINDOW_S * SAMPLE_RATE
-    zeros = np.zeros(n - len(x), dtype=np.float32)
-    if padding == "left":
-        return np.concatenate([zeros, x])
-    return np.concatenate([x, zeros])
 
 
 class EoTDataset(Dataset):

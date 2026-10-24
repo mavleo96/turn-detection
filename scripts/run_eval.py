@@ -21,11 +21,12 @@ import pandas as pd
 import torch
 from transformers import Trainer, TrainingArguments, WhisperFeatureExtractor
 
-from data.constants import MANIFESTS_DIR, SAMPLE_RATE, WINDOW_S
-from data.dataset import EoTCollator, EoTDataset, crop_window, load_split, narrowband, pad_window
-from model import EoTModel
-from train.metrics import breakdown, eot_metrics
-from train.trainer import predict_probs
+from turn_detection.data.audio import crop_window, narrowband, pad_window
+from turn_detection.data.constants import MANIFESTS_DIR, SAMPLE_RATE, WINDOW_S
+from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
+from turn_detection.model import EoTModel
+from turn_detection.train.metrics import breakdown, eot_metrics
+from turn_detection.train.trainer import predict_probs
 
 REPORT_METRICS = ["accuracy", "precision", "recall", "f1", "false_endpoint_rate", "roc_auc"]
 

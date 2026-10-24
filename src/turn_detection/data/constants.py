@@ -10,7 +10,7 @@ SEED = 42
 SAMPLE_RATE = 16000
 WINDOW_S = 8  # the model sees the last 8 s of each clip
 
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[3]  # the repo root (src/turn_detection/data/)
 MANIFESTS_DIR = _ROOT / "artifacts" / "manifests"  # artifacts/ is generated and gitignored
 FOLDS_DIR = _ROOT / "artifacts" / "folds"
 RUNS_DIR = _ROOT / "artifacts" / "runs"

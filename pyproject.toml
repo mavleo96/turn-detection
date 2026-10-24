@@ -1,6 +1,7 @@
-# Makes the src/ packages (data, model, train) importable from scripts/, tests/ and `python -m train`:
-#   pip install -e .   (editable: paths in data.common resolve to this checkout)
-# Dependencies are pinned in requirements.txt.
+# The `turn_detection` package (src/turn_detection/: data, model, train).
+#   pip install -e ".[train]"   training, evaluation, scripts and tests (editable: data.constants paths resolve
+#                               to this checkout); the exact training env is pinned in requirements.txt
+#   pip install .               core only: the model and audio preprocessing, enough to serve (see serve/)
 
 [build-system]
 requires = ["setuptools>=69"]
@@ -11,7 +12,29 @@ name = "turn-detection"
 version = "0.1.0"
 description = "End-of-turn detection for voice-agent pipelines"
 requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "soundfile>=0.13",
+    "soxr>=0.5",
+    "torch>=2.6",
+    "transformers>=5.20",
+]
+
+[project.optional-dependencies]
+train = [
+    "accelerate>=1.15",
+    "datasets>=5.1",
+    "evaluate>=0.4.6",
+    "huggingface_hub>=2.2",
+    "matplotlib>=3.11",
+    "pandas>=3.1",
+    "pyarrow>=26.0",
+    "scikit-learn>=1.9",
+    "torch-audiomentations>=0.12",
+    "tqdm>=4.70",
+    "wandb>=0.31",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["data", "model", "train"]
+include = ["turn_detection*"]
