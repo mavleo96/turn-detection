@@ -8,6 +8,7 @@ import torch
 from transformers import Trainer, TrainerCallback, TrainingArguments, WhisperFeatureExtractor
 from transformers.trainer_utils import IntervalStrategy, SaveStrategy, SchedulerType
 
+import wandb
 from turn_detection.data import DATASETS, LOUDNESS_DBFS, NARROWBAND, RUNS_DIR, WINDOW_S
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.data.transforms import GAIN_DB, NOISE_P, build_augment
@@ -153,5 +154,12 @@ def train(args: EoTTrainingArguments, model: EoTModel | None = None) -> Path:
 
     trainer.log(results)  # also to wandb
     trainer.save_metrics("final", results)
+
+    # Note: best/ as a model artifact of the W&B run; WANDB_LOG_MODEL would upload it before the threshold is set
+    if "wandb" in args.report_to:
+        metadata = {"window_s": args.window_s, "threshold": threshold, "val_roc_auc": val_metrics.get("roc_auc")}
+        artifact = wandb.Artifact(f"{args.run_name}-best", type="model", metadata=metadata)
+        artifact.add_dir(str(out / "best"))
+        wandb.run.log_artifact(artifact, aliases=["best"])
 
     return out

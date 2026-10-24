@@ -63,7 +63,9 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   per window; `window_s` is saved in the model config and `best/`'s feature extractor, so run_eval follows it;
   `EoTCollator` rejects audio of another length. 5 epochs, batch 64, AdamW lr 1e-3, wd 0.01, 5% warmup + cosine
   to 0, grad clip 1.0, bf16, frozen encoder (25k trainable params), best epoch by val ROC AUC, threshold = best F1
-  on val (saved in `best/config.json`).
+  on val (saved in `best/config.json`); `best/` is logged to the W&B run as model artifact `<run name>-best`
+  (after the threshold is set; `WANDB_LOG_MODEL` would upload it before). The 3 runs of 2026-10-24 were uploaded
+  by hand the same way.
 - Splits (`load_split`): train = smart-turn English train without `HOLDOUT`, 90% (random, seed 42) + TTD train
   (52,893 + 333,280; 4 TTD clips torchcodec can't decode are left out: `UNDECODABLE`); validation = the other
   10% + TTD validation (5,877 + 37,600); test = all English smart-turn test (holdout sources included: 402 human_5

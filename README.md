@@ -164,7 +164,9 @@ data and augmentation settings), parsed by `HfArgumentParser`, so every setting 
 
 A run directory (default `artifacts/runs/<timestamp>`) holds the Trainer's last checkpoints (`checkpoint-<step>/`,
 with `trainer_state.json`), `best/` (`config.json` with the threshold, `model.safetensors`, the feature extractor),
-and `final_results.json` (validation metrics at the threshold). Metrics (scikit-learn; positive class = complete):
+and `final_results.json` (validation metrics at the threshold). With W&B reporting (the default), `best/` is also
+logged to the run as a model artifact `<run name>-best` (alias `best`; metadata: window, threshold, validation ROC
+AUC). Metrics (scikit-learn; positive class = complete):
 accuracy, F1, **FPR** (incomplete turns predicted complete: the agent interrupts), **FNR** (complete turns predicted
 incomplete: the agent waits too long), ROC AUC and PR AUC (average precision).
 

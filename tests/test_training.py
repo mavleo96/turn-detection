@@ -2,6 +2,7 @@ import json
 import os
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -12,6 +13,7 @@ from run_eval import evaluate_test
 from turn_detection.data import RUNS_DIR, SAMPLE_RATE, WINDOW_S
 from turn_detection.data.dataset import load_split
 from turn_detection.model import EoTModel
+from turn_detection.train import trainer as trainer_module
 from turn_detection.train.metrics import best_f1_threshold, eot_metrics
 from turn_detection.train.trainer import EoTTrainingArguments, train
 
@@ -32,19 +34,19 @@ def test_metrics():
 def training_args(root, **kw) -> EoTTrainingArguments:
     # Note: a local Whisper dir with the default feature extractor, so train() needs no download
     WhisperFeatureExtractor().save_pretrained(root / "whisper")
-    return EoTTrainingArguments(
-        output_dir=str(root / "runs" / "smoke"),
-        whisper=str(root / "whisper"),
-        num_train_epochs=2,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
-        dataloader_num_workers=0,
-        bf16=False,
-        use_cpu=True,
-        logging_steps=1,
-        report_to="none",
-        **kw,
-    )
+    defaults = {
+        "output_dir": str(root / "runs" / "smoke"),
+        "whisper": str(root / "whisper"),
+        "num_train_epochs": 2,
+        "per_device_train_batch_size": 8,
+        "per_device_eval_batch_size": 8,
+        "dataloader_num_workers": 0,
+        "bf16": False,
+        "use_cpu": True,
+        "logging_steps": 1,
+        "report_to": "none",
+    }
+    return EoTTrainingArguments(**(defaults | kw))
 
 
 def last_state(run):
@@ -145,6 +147,29 @@ def test_train_and_evaluate_a_2s_window(tmp_path, hub):
 
     with pytest.raises(ValueError, match="built for 8 s"):
         train(training_args(tmp_path, window_s=2), model=tiny_model())
+
+
+def test_best_is_logged_to_wandb(tmp_path, hub, monkeypatch):
+    # the HF W&B callback runs with W&B disabled; our upload goes to a fake to check what would be sent
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    logged = []
+
+    class FakeArtifact:
+        def __init__(self, name, type, metadata):
+            self.name, self.type, self.metadata, self.dirs = name, type, metadata, []
+
+        def add_dir(self, path):
+            self.dirs.append(Path(path))
+
+    fake = SimpleNamespace(Artifact=FakeArtifact, run=SimpleNamespace(log_artifact=lambda a, aliases: logged.append(a)))
+    monkeypatch.setattr(trainer_module, "wandb", fake)
+    args = training_args(tmp_path, max_steps=2, augment=False, report_to="wandb", run_name="smoke")
+    run = train(args, model=tiny_model())
+
+    (artifact,) = logged
+    config = json.loads((run / "best" / "config.json").read_text())
+    assert artifact.name == "smoke-best" and artifact.type == "model" and artifact.dirs == [run / "best"]
+    assert artifact.metadata["threshold"] == config["threshold"] and artifact.metadata["window_s"] == 8
 
 
 def test_train_on_one_dataset(tmp_path, hub):
