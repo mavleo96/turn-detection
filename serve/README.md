@@ -68,7 +68,8 @@ response carries `Server-Timing: total;dur=<ms>`, the time spent in the server. 
 undecodable, too long, NaN samples), 415 (other content types), 422 (bad `sample_rate`), 503 with
 `Retry-After: 1` (more than `max_queue` requests waiting).
 
-`GET /health`: status, threads, threshold, the batching settings, and counters: `requests`, `batches`,
+`GET /health`: status, the machine (`cpu` model, usable `cores`, `cpu_limit` from a container's `--cpus`),
+threads, the model's `window_s` and threshold, the batching settings, and counters: `requests`, `batches`,
 `mean_batch_size`, `queued` (waiting now) and `rejected` (503s so far).
 
 ## Docker
@@ -97,19 +98,19 @@ x86 server, build on the server, or cross-build with
 ## Benchmark
 
 `scripts/benchmark.py` load-tests a running server (local or Docker, any host) and reports throughput and
-latency per step against a target (default p95 < 100 ms). It needs only httpx, numpy and soundfile:
+latency per step. It needs only httpx, numpy and soundfile:
 
 ```bash
-python scripts/benchmark.py --url http://127.0.0.1:8000                   # 10 workers x 100 calls each
-python scripts/benchmark.py --workers 1,5,10 --calls 200 --json results.json
-python scripts/benchmark.py --rps 5,10,20 --duration 20                   # fixed arrival rates instead
+python scripts/benchmark.py --model both-8s --url http://127.0.0.1:8000
+# -> results/benchmark/both-8s-t<threads>-w<workers>-b<max_batch>/results.md and results.json (tracked)
 ```
 
-- `--workers`: closed loop. Each worker sends its next request as soon as the last returns, `--calls`
-  times. This finds the most the server can do; latency then includes queueing behind the other workers.
-- `--rps`: open loop. Requests arrive at that rate (Poisson) whatever the server is doing, as real callers
-  do; latency counts from the scheduled send time, so queueing can't hide. This is the right test for
-  "is p95 under 100 ms at N requests per second".
+Closed loop: 1, 2, 4, then 10 workers, each sending its next request as soon as the last returns, 100 times.
+With one worker latency is the server's own; with many the server is saturated, so throughput is its capacity
+and latency includes queueing behind the other workers. `--model` names the run (the server can't tell which
+checkpoint is mounted); the rest of the name and the settings in the files come from `/health`. `results.md` starts with the setup
+(server CPU and settings, model, client, requests) and notes on reading the numbers. `--out` changes
+the base directory (default `results/benchmark/`); a rerun with the same name and settings overwrites.
 
 Per step: OK / 503 / errors, req/s, p50/p90/p95/p99/max latency, the server's own time (`Server-Timing`:
 client minus server is the network and client overhead) and the mean batch size.
@@ -148,7 +149,7 @@ math (slower), ONNX Runtime fp32 (no faster on the Mac; ~15% faster than torch o
 (~1 ms). int8 (ONNX Runtime dynamic quantization: ~1.5x faster than fp32 on the Linux VM) changes the outputs
 and is not used.
 
-Tune on the machine you deploy to: start one container, run `scripts/benchmark.py --workers 1,5,10`, and try
+Tune on the machine you deploy to: start one container, run `scripts/benchmark.py --model <name>`, and try
 `THREADS` (forward speed) and `WORKERS` (parallel passes; total threads `WORKERS x THREADS` should not exceed
 the cores). Set `MAX_QUEUE` to keep accepted requests fast once the server is at
 capacity (callers retry or fall back on 503); scale out with more containers behind a load balancer.

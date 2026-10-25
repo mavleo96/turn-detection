@@ -15,8 +15,11 @@ spent in the server.
 
 import asyncio
 import io
+import os
+import platform
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import numpy as np
 import soundfile as sf
@@ -66,6 +69,26 @@ def read_audio(body: bytes, content_type: str, sample_rate: int) -> tuple[np.nda
     return x, sample_rate
 
 
+def machine() -> dict:
+    """Where the server runs, for /health (scripts/benchmark.py records it): CPU model, usable cores, CPU limit."""
+    cpu = platform.machine()
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        lines = cpuinfo.read_text().splitlines()
+        names = [line.split(":", 1)[1].strip() for line in lines if line.startswith("model name")]
+        cpu = names[0] if names else cpu
+
+    # Note: a container's --cpus limit is a cgroup quota, invisible to the affinity mask
+    limit = None  # cores; None: no limit
+    cpu_max = Path("/sys/fs/cgroup/cpu.max")
+    if cpu_max.exists():
+        quota, period = cpu_max.read_text().split()
+        limit = None if quota == "max" else int(quota) / int(period)
+
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    return {"cpu": cpu, "cores": cores, "cpu_limit": limit}
+
+
 def create_app(
     inference: EoTInference,
     max_batch: int = 4,
@@ -76,6 +99,7 @@ def create_app(
     batcher = MicroBatcher(
         inference.probabilities, max_batch=max_batch, max_wait_ms=max_wait_ms, workers=workers, max_queue=max_queue
     )
+    host = machine()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -91,7 +115,9 @@ def create_app(
         mean_batch = batcher.requests / batcher.batches if batcher.batches else None
         return {
             "status": "ok",
+            **host,
             "threads": inference.threads,
+            "window_s": inference.window_s,
             "threshold": inference.threshold,
             "max_batch": batcher.max_batch,
             "max_wait_ms": batcher.max_wait_s * 1000,

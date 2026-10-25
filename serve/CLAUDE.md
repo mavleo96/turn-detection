@@ -7,7 +7,7 @@ from the code or the README.
 
 - Goal: dockerized FastAPI endpoint, p95 < 100 ms, stress-tested under concurrent calls.
 - Done: workers + small batches + `MAX_QUEUE` 503 shedding, warm-up, `Server-Timing`, uvloop/httptools,
-  `scripts/benchmark.py` (`--workers N --calls M`, or `--rps`), `serve/tests` (17, ~4 s; the fixtures export a tiny model, so
+  `scripts/benchmark.py` (closed loop, 1/2/4/10 workers x 100 calls), `serve/tests` (17, ~4 s; the fixtures export a tiny model, so
   they run in the training env, not with serve/requirements.txt alone).
 - Main's refactor merged (2026-10-25): windows of 2 / 4 / 8 s (`config.window_s`, read per checkpoint);
   serve decodes with soundfile itself (main removed `audio.decode`: decoding is the caller's; training uses
@@ -75,11 +75,14 @@ The user's M3 Mac:
   deployment.
 - Pattern: `docker run -d --name eot-bench -p 18000:8000 -e THREADS=2
   -v "$PWD/artifacts/models/both-8s:/model:ro" eot-serve`, wait on `/health`, then
-  `python scripts/benchmark.py --url http://127.0.0.1:18000 --workers 1,10 --calls 100`; `docker rm -f` after.
+  `python scripts/benchmark.py --model both-8s --url http://127.0.0.1:18000`; `docker rm -f` after. Results land
+  in `results/benchmark/<model>-t<threads>-w<workers>-b<max_batch>/` (tracked).
 - The client shares the laptop's CPU with the Docker VM, so heavy steps are pessimistic. Client p50 minus
   server p50 (`srv50`) has been ~1.5–2 ms: the Python client is accurate at this scale.
-- Explain closed loop (`--workers`: max throughput, latency includes queueing) vs open loop (`--rps`: the
-  latency SLO at a given arrival rate) when reporting. The user thinks in "N workers x M calls".
+- The benchmark is closed loop only, fixed at 1/2/4/10 workers x 100 calls, no pass/fail (the user's choice: open
+  loop, `--rps`, `--duration`, `--workers`/`--calls`, `--slo-ms` removed). `--model` is required: the server can't
+  tell which checkpoint is mounted at /model. When reporting, note that with many workers latency includes
+  queueing (saturated server).
 
 ## Repo conventions the user expects
 

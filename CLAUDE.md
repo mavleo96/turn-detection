@@ -54,7 +54,8 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   (Pipecat's Smart Turn v3.2 ONNX with its own preprocessing, threshold 0.5, onnxruntime on CPU, same outputs) and
   the exploration scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
   `load_dataset` in `dataset`, `explore_dataset` and `samples`); for serving, `export_onnx.py <checkpoint>`
-  (-> `<checkpoint>/model.onnx`, fp32, sigmoid included, checked against torch) and `benchmark.py` (load test).
+  (-> `<checkpoint>/model.onnx`, fp32, sigmoid included, checked against torch) and `benchmark.py` (closed-loop load test:
+  1/2/4/10 workers x 100 calls -> `results/benchmark/<model>-t<threads>-w<workers>-b<max_batch>/`, tracked).
 - The browser mic -> Silero VAD + Nemotron streaming ASR demo was removed from `main`; it is on the `backup` branch
   and in git history (before the removal commit).
 - `serve/`: the inference API (FastAPI + micro-batching; ONNX Runtime on CPU, no torch; Dockerfile without
@@ -62,7 +63,7 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   window, preprocessing and threshold from `config.json`. Details and measurements: `serve/README.md`,
   `serve/CLAUDE.md`.
 - Generated, gitignored: `artifacts/` (runs, downloaded checkpoints), `results/` (analyses), except the tracked
-  `results/eval/` (run_eval output), `results/data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`) and
+  `results/eval/` (run_eval output), `results/benchmark/` (benchmark.py output), `results/data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`) and
   `results/ttd_vs_smart_turn/` (`FINDINGS.md`).
 
 ## Training and evaluation

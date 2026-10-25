@@ -1,38 +1,38 @@
-"""Benchmark the inference API (serve/, e.g. its Docker image): throughput and latency under concurrent load,
-against a latency target. Needs only httpx, numpy and soundfile, so it runs from any machine.
+"""Benchmark the inference API (serve/, e.g. its Docker image): throughput and latency under concurrent load.
+Needs only httpx, numpy and soundfile, so it runs from any machine.
 
-Two load shapes, each run as a sweep of steps:
-  --rps 5,10,20     open loop: requests arrive at that rate (Poisson), whether or not earlier ones are done,
-                    as real callers do. Latency counts from the scheduled send time, so a client that falls
-                    behind can't hide queueing (no coordinated omission).
-  --workers 1,10    closed loop: that many workers, each sending its next request as soon as one returns,
-                    --calls times each (default 100); or for --duration seconds with --calls 0.
+Closed loop: 1, 2, 4, then 10 workers, each sending its next request as soon as the last returns, 100 times.
+With many workers the server is saturated: throughput is its capacity, and latency includes queueing behind
+the other workers.
 
-Run (from the repo root, with the server up, e.g. the Docker image on :8000):
-  python scripts/benchmark.py                                   # 10 workers x 100 calls each
-  python scripts/benchmark.py --workers 1,5,10 --calls 200 --json results.json
-  python scripts/benchmark.py --rps 5,10,20 --duration 20       # fixed arrival rates instead
-  python scripts/benchmark.py --url http://host:8000 --audio clip.wav
+Run (from the repo root, with the server up, e.g. the Docker image on :18000; --model names the run, since the
+server can't tell which checkpoint is mounted):
+  python scripts/benchmark.py --model both-8s --url http://127.0.0.1:18000
 
-Per step: requests sent, OK / 503 (shed by the server) / other errors, achieved throughput, client latency
-percentiles of the OK requests, the server's own time (Server-Timing), and the mean batch size (from
-/health). A step passes when its p95 (--percentile) is under --slo-ms and nothing but 503s failed; the
-summary names the highest passing load.
+Writes <out>/<model>-t<threads>-w<workers>-b<max_batch>/ (default out: results/benchmark/, tracked; the server
+settings come from /health): results.md (the table, as printed) and results.json (server settings, arguments,
+every step). Per step: OK / 503 (shed by the server) / other errors, achieved throughput, client latency
+percentiles of the OK requests, the server's own time (Server-Timing), and the mean batch size (from /health).
 """
 
 import argparse
 import asyncio
 import io
 import json
-import random
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 import numpy as np
 import soundfile as sf
 
 SAMPLE_RATE = 16000
+WORKERS = (1, 2, 4, 10)  # one step each
+CALLS = 100  # per worker per step
+OUT = Path(__file__).resolve().parents[1] / "results" / "benchmark"
 
 
 def synthetic_clip(seconds: float, seed: int = 0) -> np.ndarray:
@@ -61,7 +61,7 @@ def payload(args: argparse.Namespace) -> tuple[bytes, str]:
 
 @dataclass
 class Step:
-    load: str  # "rps=20" or "workers=8"
+    workers: int
     sent: int = 0
     ok: int = 0
     shed: int = 0  # 503
@@ -70,14 +70,12 @@ class Step:
     server_ms: list[float] = field(default_factory=list)  # OK requests, Server-Timing
     elapsed_s: float = 0.0
     mean_batch: float | None = None
-    late_sends: int = 0  # open loop: sends that started > 5 ms after schedule (client too slow)
 
-    def summary(self, percentile: float, slo_ms: float) -> dict:
+    def summary(self) -> dict:
         lat = np.array(self.latencies_ms) if self.latencies_ms else np.array([np.nan])
         srv = np.array(self.server_ms) if self.server_ms else np.array([np.nan])
-        p = np.percentile(lat, percentile)
         return {
-            "load": self.load,
+            "workers": self.workers,
             "sent": self.sent,
             "ok": self.ok,
             "shed_503": self.shed,
@@ -91,13 +89,12 @@ class Step:
             "server_p50_ms": float(np.percentile(srv, 50)),
             "server_p95_ms": float(np.percentile(srv, 95)),
             "mean_batch": self.mean_batch,
-            "late_sends": self.late_sends,
-            "pass": bool(self.ok and p < slo_ms and self.errors == 0),
         }
 
 
-async def one_request(client: httpx.AsyncClient, url: str, body: bytes, headers: dict, start: float, step: Step):
+async def one_request(client: httpx.AsyncClient, url: str, body: bytes, headers: dict, step: Step):
     step.sent += 1
+    start = time.perf_counter()
     try:
         r = await client.post(url, content=body, headers=headers)
     except httpx.HTTPError:
@@ -117,37 +114,14 @@ async def one_request(client: httpx.AsyncClient, url: str, body: bytes, headers:
         step.errors += 1
 
 
-async def open_loop(client, url, body, headers, rps: float, duration: float, seed: int) -> Step:
-    step = Step(load=f"rps={rps:g}")
-    rng = random.Random(seed)
-    tasks = []
-    t0 = time.perf_counter()
-    scheduled = t0
-    while True:
-        scheduled += rng.expovariate(rps)  # Poisson arrivals
-        if scheduled - t0 >= duration:
-            break
-        delay = scheduled - time.perf_counter()
-        if delay > 0:
-            await asyncio.sleep(delay)
-        elif delay < -0.005:
-            step.late_sends += 1
-        tasks.append(asyncio.create_task(one_request(client, url, body, headers, scheduled, step)))
-    await asyncio.gather(*tasks)
-    step.elapsed_s = time.perf_counter() - t0
-    return step
-
-
-async def closed_loop(client, url, body, headers, workers: int, calls: int, duration: float) -> Step:
-    """`workers` workers, each calling back to back: `calls` calls each, or until `duration` is up (calls 0)."""
-    step = Step(load=f"workers={workers}")
+async def closed_loop(client, url, body, headers, workers: int) -> Step:
+    """`workers` workers, each making CALLS back-to-back calls."""
+    step = Step(workers=workers)
     t0 = time.perf_counter()
 
     async def caller():
-        done = 0
-        while (done < calls) if calls else (time.perf_counter() - t0 < duration):
-            await one_request(client, url, body, headers, time.perf_counter(), step)
-            done += 1
+        for _ in range(CALLS):
+            await one_request(client, url, body, headers, step)
 
     await asyncio.gather(*(caller() for _ in range(workers)))
     step.elapsed_s = time.perf_counter() - t0
@@ -156,6 +130,14 @@ async def closed_loop(client, url, body, headers, workers: int, calls: int, dura
 
 async def health(client: httpx.AsyncClient, base: str) -> dict:
     return (await client.get(f"{base}/health")).json()
+
+
+def row(s: dict) -> str:
+    """One step as a markdown table row."""
+    latencies = [f"{s[k]:.1f}" for k in ("p50_ms", "p90_ms", "p95_ms", "p99_ms", "max_ms", "server_p50_ms")]
+    batch = f"{s['mean_batch']:.2f}" if s["mean_batch"] else "-"
+    values = [s["workers"], s["ok"], s["shed_503"], s["errors"], f"{s['throughput_rps']:.1f}", *latencies, batch]
+    return "| " + " | ".join(map(str, values)) + " |"
 
 
 async def run(args: argparse.Namespace) -> list[dict]:
@@ -167,83 +149,87 @@ async def run(args: argparse.Namespace) -> list[dict]:
 
     async with httpx.AsyncClient(timeout=args.timeout, limits=limits) as client:
         info = await health(client, base)
-        print(f"server: {json.dumps(info)}")
-        length = f"{args.calls} calls per worker" if args.calls else f"{args.duration:g} s"
-        print(f"payload: {len(body) / 1024:.0f} KiB {content_type}; worker steps: {length}\n")
+        run_dir = args.out / f"{args.model}-t{info['threads']}-w{info['workers']}-b{info['max_batch']}"
+        local = urlparse(base).hostname in ("127.0.0.1", "localhost", "::1")
+        limit = f", limited to {info['cpu_limit']:g} cores" if info["cpu_limit"] else ""
+        audio = args.audio or f"synthetic {args.seconds:g} s clip"
+        lines = [
+            f"# Benchmark: {args.model}",
+            "",
+            f"Run {datetime.now():%Y-%m-%d %H:%M}.",
+            "",
+            "## Setup",
+            "",
+            f"- Server: `serve/` at {base}, ONNX Runtime fp32 on CPU: {info['cpu']}, {info['cores']} cores usable"
+            f"{limit}.",
+            f"- Model: {args.model}, window {info['window_s']} s, threshold {info['threshold']:.4f}.",
+            f"- Settings: threads {info['threads']} (0: one per core), workers {info['workers']}, max_batch "
+            f"{info['max_batch']}, max_wait_ms {info['max_wait_ms']:g}, max_queue {info['max_queue']} (0: no limit).",
+            "- Client: this script (Python, httpx), "
+            + ("on the same machine, sharing its CPU with the server." if local else "on another machine."),
+            f"- Requests: {audio}, {len(body) / 1024:.0f} KiB {content_type}; closed loop: each worker sends its next "
+            f"request as soon as the last returns, {CALLS} calls per worker, steps of {', '.join(map(str, WORKERS))} "
+            f"workers; {args.warmup} warm-up requests first, {args.pause:g} s pause between steps.",
+            "",
+            "## How to read it",
+            "",
+            "- Latency (ms) is client side: HTTP, decoding, preprocessing, queueing and the model; server p50 is the "
+            "time inside the server (`Server-Timing`), so the difference is network and client overhead.",
+            "- Once workers exceed what the server runs in parallel, it is saturated: req/s is its capacity and "
+            "latency is mostly queueing (about workers / req/s), not slower requests.",
+            "- On CPU a batch of B costs about B single passes, so batching (batch = mean batch size) adds little "
+            "throughput.",
+            "- The content of the audio doesn't change the cost: every request is cut or padded to the window.",
+        ]
+        if local:
+            lines.append("- Client and server share the CPU: heavy steps are pessimistic for the server alone.")
+        lines += [
+            "",
+            "## Results",
+            "",
+            "| workers | ok | 503 | err | req/s | p50 | p90 | p95 | p99 | max | server p50 | batch |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        print("\n".join(lines), flush=True)
 
         # Warm-up: a few sequential requests (connections, server caches)
         for _ in range(args.warmup):
             await client.post(url, content=body, headers=headers)
 
-        loads = [("rps", float(v)) for v in args.rps.split(",") if v] if args.rps else []
-        loads += [("workers", int(v)) for v in args.workers.split(",") if v] if args.workers else []
-
         results = []
-        header = (
-            f"{'load':>16} {'ok':>6} {'503':>5} {'err':>4} {'req/s':>7} {'p50':>7} {'p90':>7} {'p95':>7} "
-            f"{'p99':>7} {'max':>7} {'srv50':>6} {'batch':>5}  pass(p{args.percentile:g}<{args.slo_ms:g}ms)"
-        )
-        print(header)
-        for i, (kind, value) in enumerate(loads):
+        for workers in WORKERS:
             before = await health(client, base)
-            if kind == "rps":
-                step = await open_loop(client, url, body, headers, value, args.duration, seed=i)
-            else:
-                step = await closed_loop(client, url, body, headers, value, args.calls, args.duration)
+            step = await closed_loop(client, url, body, headers, workers)
             after = await health(client, base)
             batches = after["batches"] - before["batches"]
             step.mean_batch = (after["requests"] - before["requests"]) / batches if batches else None
 
-            s = step.summary(args.percentile, args.slo_ms)
+            s = step.summary()
             results.append(s)
-            batch = f"{s['mean_batch']:.2f}" if s["mean_batch"] else "-"
-            print(
-                f"{s['load']:>16} {s['ok']:>6} {s['shed_503']:>5} {s['errors']:>4} {s['throughput_rps']:>7.1f} "
-                f"{s['p50_ms']:>7.1f} {s['p90_ms']:>7.1f} {s['p95_ms']:>7.1f} {s['p99_ms']:>7.1f} "
-                f"{s['max_ms']:>7.1f} {s['server_p50_ms']:>6.1f} {batch:>5}  {'PASS' if s['pass'] else 'FAIL'}"
-                + (f"  ({s['late_sends']} late sends: client-limited)" if s["late_sends"] > s["sent"] * 0.05 else ""),
-                flush=True,
-            )
+            lines.append(row(s))
+            print(lines[-1], flush=True)
             await asyncio.sleep(args.pause)  # let the server drain between steps
 
-        passing = [s for s in results if s["pass"]]
-        if passing:
-            best = max(passing, key=lambda s: s["throughput_rps"])
-            print(
-                f"\nhighest passing load: {best['load']} -> {best['throughput_rps']:.1f} req/s at "
-                f"p{args.percentile:g} {best[f'p{args.percentile:g}_ms']:.1f} ms"
-            )
-        else:
-            print("\nno step met the target")
-
-        if args.json:
-            with open(args.json, "w") as f:
-                json.dump({"server": info, "args": vars(args), "steps": results}, f, indent=2)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "results.md").write_text("\n".join(lines) + "\n")
+        with open(run_dir / "results.json", "w") as f:
+            json.dump({"server": info, "args": vars(args), "steps": results}, f, indent=2, default=str)  # Path -> str
+        print(f"\nwrote {run_dir}")
         return results
 
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Benchmark the EoT inference API under concurrent load")
+    ap.add_argument("--model", required=True, help="the served checkpoint's name, for the run directory (e.g. both-8s)")
     ap.add_argument("--url", default="http://127.0.0.1:8000")
-    ap.add_argument("--rps", default="", help="open-loop request rates, comma-separated (e.g. 5,10,20)")
-    ap.add_argument("--workers", default="", help="closed-loop worker counts, comma-separated (e.g. 1,5,10)")
-    ap.add_argument("--calls", type=int, default=100, help="calls per worker per step (0: run for --duration)")
-    ap.add_argument(
-        "--duration", type=float, default=15, help="seconds per --rps step (and worker step with --calls 0)"
-    )
+    ap.add_argument("--out", type=Path, default=OUT, help="results go to <out>/<model>-t<threads>-w<workers>-b<batch>/")
     ap.add_argument("--audio", help="a WAV/FLAC file to send (default: a synthetic clip)")
     ap.add_argument("--seconds", type=float, default=6, help="length of the synthetic clip")
     ap.add_argument("--raw", action="store_true", help="send raw float32 (application/octet-stream) instead of WAV")
-    ap.add_argument("--slo-ms", type=float, default=100)
-    ap.add_argument("--percentile", type=float, default=95, choices=[50, 90, 95, 99])
     ap.add_argument("--timeout", type=float, default=30)
     ap.add_argument("--warmup", type=int, default=10)
     ap.add_argument("--pause", type=float, default=2, help="seconds between steps")
-    ap.add_argument("--json", help="write the results here")
-    args = ap.parse_args()
-    if not args.rps and not args.workers:
-        args.workers = "10"
-    return args
+    return ap.parse_args()
 
 
 if __name__ == "__main__":
