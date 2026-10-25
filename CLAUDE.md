@@ -50,9 +50,10 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
     (frozen-by-trainer Whisper Tiny encoder -> softmax layer weights over 4 layers -> attention pooling -> MLP).
   - `train/` HF Trainer setup (`trainer.py`), sklearn metrics (`metrics.py`), CLI `python -m turn_detection.train`.
 - `scripts/`: `run_eval.py <checkpoint>` (test split -> `results/eval/<run>/<checkpoint>/`, tracked: per-clip
-  predictions + metrics for all, per corpus, per source; at the model's threshold) and the exploration scripts
-  `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch `load_dataset` in `dataset`,
-  `explore_dataset` and `samples`).
+  predictions + metrics for all, per corpus, per source; at the model's threshold), `run_eval_baseline.py`
+  (Pipecat's Smart Turn v3.2 ONNX with its own preprocessing, threshold 0.5, onnxruntime on CPU, same outputs) and
+  the exploration scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
+  `load_dataset` in `dataset`, `explore_dataset` and `samples`).
 - The browser mic -> Silero VAD + Nemotron streaming ASR demo was removed from `main`; it is on the `backup` branch
   and in git history (before the removal commit).
 - `serve/` (FastAPI + micro-batching, CPU Dockerfile) lives on the `serve` branch only (ignored on `main`).

@@ -16,7 +16,7 @@ phone calls + Seamless Interaction).
 | `src/turn_detection/data/` | Constants, paths and the preprocessing defaults (`__init__.py`); per-clip audio steps shared with serving: last-`window_s` crop, 8 kHz round trip, loudness normalization, padding (`audio.py`); the splits (`load_split`), `EoTDataset`, `EoTCollator` (`dataset.py`); augmentation with torch-audiomentations (`transforms.py`) |
 | `src/turn_detection/model/` | The model only: `EoTConfig` (`config.py`), attention pooling (`modules.py`), `EoTModel`, a transformers `PreTrainedModel` with the encoder setup and layer weights (`model.py`) |
 | `src/turn_detection/train/` | HF `Trainer` setup (`trainer.py`), metrics with scikit-learn (`metrics.py`); `python -m turn_detection.train` |
-| `scripts/` | One-off runs: `explore_dataset.py`, `samples.py`, `run_eval.py` |
+| `scripts/` | One-off runs: `explore_dataset.py`, `samples.py`, `run_eval.py`, `run_eval_baseline.py` |
 | `tests/` | Tests for all of the above (CPU only, no network: tiny in-memory datasets stand in for the Hub) |
 | `results/` | Analyses: `data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`), `ttd_vs_smart_turn/` (`FINDINGS.md`), and test evaluations (`eval/<run>/<checkpoint>/`, `run_eval.py`), tracked; listening samples (`samples/`), gitignored |
 | `artifacts/` | Generated, gitignored: training runs |
@@ -55,6 +55,7 @@ python -m turn_detection.train                       # smart-turn + TTD, 8 s -> 
 python -m turn_detection.train --datasets ttd        # one dataset
 python -m turn_detection.train --window_s 2          # a 2 s window (one run per window)
 python scripts/run_eval.py artifacts/runs/<run>/best     # -> results/eval/<run>/best/
+python scripts/run_eval_baseline.py                  # Pipecat's Smart Turn v3.2 -> results/eval/smart-turn-v3.2-gpu/
 ```
 
 | Step | Main flags | Disk | Time |
@@ -111,6 +112,10 @@ persistent volume on this instance: after a recycle the first step downloads it 
   model's window, preprocessing and validation threshold (`config.threshold`). Writes `results/eval/<run>/<checkpoint>/`:
   `predictions.parquet` (per clip: id, source, corpus, label, prob, pred), `metrics.csv` and `metrics.md` (n,
   complete share, accuracy, F1, ROC AUC, PR AUC, FNR, FPR for all clips, per corpus and per source).
+- **run_eval_baseline**: Pipecat's Smart Turn v3 (ONNX from `pipecat-ai/smart-turn-v3`, default v3.2 fp32) on the
+  same test split with its own preprocessing (last 8 s, left zero-padding, `do_normalize=True`, full band) and
+  threshold 0.5, written like `run_eval` to `results/eval/<model file>/` (~10 min on CPU). Smart Turn was trained on
+  all of smart-turn v3.2 train (so `human_5` and `rime_2` too) and never saw TTD.
 
 ## Model
 

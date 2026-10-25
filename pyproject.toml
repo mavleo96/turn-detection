@@ -25,6 +25,7 @@ train = [
     "accelerate>=1.15",
     "datasets>=5.1",
     "matplotlib>=3.11",
+    "onnxruntime>=1.31",  # scripts/run_eval_baseline.py (Smart Turn v3)
     "pandas>=3.1",
     "pyarrow>=26.0",  # pandas.read_parquet
     "scikit-learn>=1.9",

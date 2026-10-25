@@ -32,5 +32,8 @@ matplotlib==3.11.2
 # Threshold selection (precision-recall curve)
 scikit-learn==1.9.1
 
+# Baseline: Pipecat's Smart Turn v3 ONNX model (scripts/run_eval_baseline.py)
+onnxruntime==1.31.0
+
 # Tests
 pytest==9.1.1
