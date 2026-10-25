@@ -14,10 +14,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import soundfile as sf
+from datasets import load_dataset
 
-from turn_detection.data.audio import decode
-from turn_detection.data.constants import RESULTS_DIR, SEED
-from turn_detection.data.dataset import load_metadata, load_split, rows_for_ids
+from turn_detection.data import LANGUAGE, META_COLUMNS, RESULTS_DIR, SEED, SMART_TURN_TEST, SMART_TURN_TRAIN
+
+
+def load_metadata(ds) -> pd.DataFrame:
+    """English metadata of a raw smart-turn split (no audio), sorted by id."""
+    meta = ds.select_columns(META_COLUMNS).to_pandas()
+    return meta[meta["language"] == LANGUAGE].sort_values("id", ignore_index=True)
 
 
 def bucket_name(endpoint: bool, synthetic: bool) -> str:
@@ -36,10 +41,11 @@ def pick_samples(meta: pd.DataFrame, per_bucket: int = 15, seed: int = SEED) -> 
 
 
 def export_samples(out_dir: Path, per_bucket: int, seed: int) -> pd.DataFrame:
-    splits = {split: load_split(split) for split in ("train", "test")}
-    meta = pd.concat(
-        [load_metadata(split, ds=ds).assign(split=split) for split, ds in splits.items()], ignore_index=True
-    )
+    splits = {
+        "train": load_dataset(SMART_TURN_TRAIN, split="train"),
+        "test": load_dataset(SMART_TURN_TEST, split="train"),
+    }
+    meta = pd.concat([load_metadata(ds).assign(split=split) for split, ds in splits.items()], ignore_index=True)
     picks = pick_samples(meta, per_bucket, seed)
     picks["n"] = picks.groupby("bucket").cumcount()
     for bucket in picks["bucket"].unique():  # regenerate buckets so an earlier run's files can't linger
@@ -49,8 +55,9 @@ def export_samples(out_dir: Path, per_bucket: int, seed: int) -> pd.DataFrame:
     files, durations, rates = {}, {}, {}
     for split, g in picks.groupby("split", sort=True):
         ds = splits[split]
-        for i, row in zip(g.index, rows_for_ids(ds, g["id"])):
-            x, sr = decode(ds[int(row)]["audio"]["bytes"])
+        for i, row in zip(g.index, pd.Index(ds["id"]).get_indexer(g["id"])):
+            samples = ds[int(row)]["audio"].get_all_samples()  # the file's own rate and channels
+            x, sr = samples.data.numpy().T, samples.sample_rate  # (T, channels)
             rel = Path(picks.at[i, "bucket"]) / f"{picks.at[i, 'n']:02d}_{picks.at[i, 'id']}.wav"
             sf.write(out_dir / rel, x, sr)
             files[i], durations[i], rates[i] = str(rel), round(len(x) / sr, 2), sr

@@ -1,0 +1,46 @@
+{
+ "generated": "2026-10-24",
+ "repos": {
+  "train": "pipecat-ai/smart-turn-data-v3.2-train",
+  "test": "pipecat-ai/smart-turn-data-v3.2-test"
+ },
+ "rows": 302473,
+ "overview": [
+  {
+   "split": "train",
+   "rows": 270946,
+   "languages": 23,
+   "sources": 12,
+   "english_share": 0.2429,
+   "complete_share": 0.4957,
+   "synthetic_share": 0.8243,
+   "hours": 575.7
+  },
+  {
+   "split": "test",
+   "rows": 31527,
+   "languages": 23,
+   "sources": 12,
+   "english_share": 0.248,
+   "complete_share": 0.4979,
+   "synthetic_share": 0.814,
+   "hours": 67.3
+  }
+ ],
+ "checks": {
+  "duplicate_ids_within_split": {
+   "train": 0,
+   "test": 0
+  },
+  "ids_in_both_splits": 0,
+  "spoken_text_non_null": 0
+ },
+ "spec_vs_measured": {
+  "English share": "24.3%",
+  "complete share (labels)": "49.6%",
+  "synthetic share": "82.3%",
+  "endfiller null share": "20.7%",
+  "clip length range": "0.20-45.3 s",
+  "median clip length": "7.12 s"
+ }
+}

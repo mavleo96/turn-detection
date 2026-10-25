@@ -1,2 +1,4 @@
-# Dev tools (installed into the conda env `turn`). Ruff itself is pinned in .pre-commit-config.yaml.
+# Dev tools (installed into the conda env `turn`). Keep ruff in sync with .pre-commit-config.yaml.
 pre-commit==4.7.0
+ruff==0.17.2
+# Install once:  pip install -r requirements-dev.txt && pre-commit install

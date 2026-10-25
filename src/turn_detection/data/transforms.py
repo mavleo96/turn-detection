@@ -1,18 +1,8 @@
-"""Training augmentation with torch-audiomentations, applied per clip (16 kHz) by EoTDataset.
-
-    augment = build_augment()                         # Compose([Gain, AddColoredNoise]) or None
-    y = apply_augment(augment, x, seed=(seed, epoch, item))
-
-torch-audiomentations draws from torch's global generator, so `apply_augment` seeds it per clip inside
-`torch.random.fork_rng()`: results are reproducible regardless of DataLoader workers, and the caller's
-random state is left untouched.
-"""
-
 import numpy as np
 import torch
 from torch_audiomentations import AddColoredNoise, Compose, Gain
 
-from .constants import SAMPLE_RATE
+from . import SAMPLE_RATE
 
 GAIN_DB = 6.0  # uniform random gain in [-gain_db, +gain_db]
 NOISE_P = 0.3  # probability of added colored noise ...
@@ -24,7 +14,8 @@ def build_augment(gain_db: float = GAIN_DB, noise_p: float = NOISE_P, snr_db: tu
     """Compose of the enabled transforms (gain_db > 0, noise_p > 0); None when nothing is enabled."""
     transforms = []
 
-    if gain_db > 0:  # Gain rejects an empty range
+    # Note: Gain rejects an empty range
+    if gain_db > 0:
         transforms.append(
             Gain(
                 min_gain_in_db=-gain_db,
@@ -53,6 +44,8 @@ def build_augment(gain_db: float = GAIN_DB, noise_p: float = NOISE_P, snr_db: tu
 
 def apply_augment(augment: Compose, x: np.ndarray, seed: tuple[int, ...]) -> np.ndarray:
     """Augment one mono float32 waveform, deterministically for `seed`; output clipped to [-1, 1]."""
+    # Note: torch-audiomentations draws from torch's global generator, so seed it per clip inside fork_rng:
+    # reproducible regardless of DataLoader workers, and the caller's random state is left untouched
     clip_seed = int(np.random.SeedSequence(seed).generate_state(1)[0])
     samples = torch.from_numpy(x)[None, None]  # (batch 1, channel 1, T), as torch-audiomentations expects
 

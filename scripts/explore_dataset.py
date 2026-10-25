@@ -1,24 +1,23 @@
-"""Explore the whole smart-turn-data-v3.2 dataset (both splits, every language) with Hugging Face `datasets`.
+"""Explore the whole smart-turn-data-v3.2 dataset (both repos, every language) and the training splits (smart-turn +
+TTD, as load_split builds them) with Hugging Face `datasets`.
 
-Downloads both repos into the Hugging Face cache (HF_HOME): ~46 GB of parquet, plus the Arrow copy
-`datasets` prepares next to it (~90 GB in total). Reruns reuse the cache, including the audio pass.
-
-  metadata  every row: languages, sources, labels, synthetic flag, fillers, nulls, id checks
-  audio     every clip decoded once (Dataset.map, parallel, cached): duration, sample rate,
+  metadata  every smart-turn row: languages, sources, labels, synthetic flag, fillers, nulls, id checks
+  audio     every smart-turn clip decoded once (Dataset.map, parallel, cached): duration, sample rate,
             channels, peak / clipping, trailing silence
+  splits    train / validation / test / excluded (holdout) of smart-turn English + TTD: clips, hours, label ratio,
+            clip length per corpus, source and --datasets choice; clip length as a label cue. Needs the audio pass
+            (smart-turn durations); TTD durations are timestamp_end - timestamp_start, equal to the audio length
 
-Writes to --out (default results/):
-  summary.md          readable summary, including the task spec's rough numbers vs. measured
-  summary.json        headline numbers and checks
-  tables/*.csv        every table in full
-  clip_stats.parquet  one row per clip: metadata + audio stats, for further exploration
-  *.png               languages, duration and trailing-silence plots
+Writes to --out (default results/data_exploration/):
+  summary.md     readable summary, including the task spec's rough numbers vs. measured
+  summary.json   headline numbers and checks
+  tables/*.csv   every table in full
+  *.png          languages, duration and trailing-silence plots
 
 Run (from the repo root):  python scripts/explore_dataset.py [--num-proc 16] [--no-audio]
 """
 
 import argparse
-import io
 import json
 import os
 from datetime import date
@@ -27,16 +26,17 @@ from pathlib import Path
 import matplotlib
 import numpy as np
 import pandas as pd
-import soundfile as sf
-from datasets import Features, Value
+from datasets import Features, Value, load_dataset
+from sklearn.metrics import roc_auc_score
 
-from turn_detection.data.constants import DATASETS, LANGUAGE, META_COLUMNS, RESULTS_DIR, WINDOW_S
+from turn_detection.data import LANGUAGE, META_COLUMNS, RESULTS_DIR, SMART_TURN_TEST, SMART_TURN_TRAIN, TTD, WINDOW_S
 from turn_detection.data.dataset import load_split
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 (after selecting the backend)
 
-REPOS = {split: repo for split, (repo, _) in DATASETS["smart-turn"]["splits"].items()}
+REPOS = {"train": SMART_TURN_TRAIN, "test": SMART_TURN_TEST}
+SPLITS = ["train", "validation", "test", "excluded (holdout)"]
 
 FRAME_MS = 20
 SILENCE_DB = -40.0  # trailing silence: frames this far below the clip's loudest frame
@@ -88,13 +88,16 @@ def trailing_silence(x: np.ndarray, sr: int, frame_ms: int = FRAME_MS, rel_db: f
     return (n_frames - 1 - last_loud) * frame / sr
 
 
-def clip_stats(audio_bytes: bytes) -> dict:
+def clip_stats(audio) -> dict:
+    """Stats of one clip from its datasets AudioDecoder (the file's own rate and channels)."""
     try:
-        x, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)
+        samples = audio.get_all_samples()
     except Exception as e:
         return {"error": repr(e)[:200]}
-    channels = x.shape[1]
-    x = x.mean(axis=1)
+    sr = samples.sample_rate
+    x = samples.data.numpy()  # (channels, T)
+    channels = x.shape[0]
+    x = x.mean(axis=0)
     absx = np.abs(x)
     n = len(x)
     return {
@@ -112,12 +115,12 @@ def clip_stats(audio_bytes: bytes) -> dict:
 
 
 def _audio_stats(batch: dict) -> dict:
-    rows = [clip_stats(audio["bytes"]) for audio in batch["audio"]]
+    rows = [clip_stats(audio) for audio in batch["audio"]]
     return {"id": batch["id"], **{c: [r.get(c) for r in rows] for c in STAT_COLUMNS}}
 
 
 def audio_stats(ds, num_proc: int) -> pd.DataFrame:
-    """Per-clip audio stats in dataset order. The FLAC bytes are decoded by soundfile, not `datasets`."""
+    """Per-clip audio stats in dataset order, decoded by `datasets` (torchcodec)."""
     mapped = ds.select_columns(["id", "audio"]).map(
         _audio_stats,
         batched=True,
@@ -132,8 +135,8 @@ def audio_stats(ds, num_proc: int) -> pd.DataFrame:
 
 def load_all(num_proc: int | None, with_audio: bool) -> pd.DataFrame:
     frames = []
-    for split in REPOS:
-        ds = load_split(split, num_proc)
+    for split, repo in REPOS.items():
+        ds = load_dataset(repo, split="train", num_proc=num_proc)
         meta = ds.select_columns(META_COLUMNS).to_pandas()
         if with_audio:
             stats = audio_stats(ds, num_proc)
@@ -145,6 +148,82 @@ def load_all(num_proc: int | None, with_audio: bool) -> pd.DataFrame:
     df["label"] = df["endpoint_bool"].map({True: "complete", False: "incomplete"}).fillna("null")
     df["kind"] = df["synthetic"].map({True: "synthetic", False: "human"}).fillna("null")
     return df
+
+
+def split_clips(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per clip the splits can use (smart-turn English from `df`, all of TTD): corpus, source, label,
+    duration and its load_split split; smart-turn train clips of the holdout sources are "excluded (holdout)"."""
+    st = df[df["language"] == LANGUAGE][["id", "dataset", "endpoint_bool", "duration_s"]]
+    st = st.rename(columns={"dataset": "source", "endpoint_bool": "label"}).assign(corpus="smart-turn")
+
+    frames = [st]
+    for split in ("train", "validation", "test"):
+        columns = ["id", "data_source", "label", "timestamp_start", "timestamp_end"]
+        m = load_dataset(TTD, split=split).select_columns(columns).to_pandas()
+        m["duration_s"] = m.pop("timestamp_end") - m.pop("timestamp_start")
+        frames.append(m.rename(columns={"data_source": "source"}).assign(corpus="ttd"))
+
+    clips = pd.concat(frames, ignore_index=True)
+    clips["label"] = clips["label"].astype(int)
+
+    clips["split"] = "excluded (holdout)"
+    for split in ("train", "validation", "test"):
+        ids = set(load_split(split).select_columns(["id"])["id"])
+        clips.loc[clips["id"].isin(ids), "split"] = split
+    clips["split"] = pd.Categorical(clips["split"], SPLITS)
+    return clips
+
+
+def split_summary(g: pd.DataFrame) -> pd.Series:
+    d = g["duration_s"]
+    return pd.Series(
+        {
+            "clips": len(g),
+            "hours": d.sum() / 3600,
+            "complete": g["label"].mean(),
+            "dur_mean": d.mean(),
+            "dur_p10": d.quantile(0.1),
+            "dur_p50": d.median(),
+            "dur_p90": d.quantile(0.9),
+            "dur_max": d.max(),
+            f"> {WINDOW_S} s (cropped)": (d > WINDOW_S).mean(),
+            "< 1 s": (d < 1).mean(),
+        }
+    )
+
+
+def split_tables(clips: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Counts, label ratio and clip length of the splits; clip length alone as a label cue."""
+    t = {}
+    for name, by in [
+        ("splits", ["split"]),
+        ("splits_by_corpus", ["split", "corpus"]),
+        ("splits_by_source", ["split", "corpus", "source"]),
+    ]:
+        t[name] = clips.groupby(by, observed=True).apply(split_summary, include_groups=False).round(3)
+    by_label = clips.assign(is_complete=clips["label"]).groupby(["corpus", "source", "is_complete"])
+    t["splits_by_source_and_label"] = by_label.apply(split_summary, include_groups=False).round(3)
+
+    # What each --datasets choice trains, tunes and tests on
+    rows = []
+    for name, corpora in [("both", ["smart-turn", "ttd"]), ("smart-turn", ["smart-turn"]), ("ttd", ["ttd"])]:
+        for split in SPLITS[:3]:
+            s = clips[(clips["split"] == split) & clips["corpus"].isin(corpora)]
+            share_st = s["corpus"].eq("smart-turn").mean()
+            rows.append({"--datasets": name, "split": split, "smart-turn share": share_st, **split_summary(s)})
+    t["splits_by_datasets_choice"] = pd.DataFrame(rows).set_index(["--datasets", "split"]).round(3)
+
+    # Note: 0.5 = no signal; below 0.5 complete clips are shorter
+    rows = [
+        {"corpus": corpus, "source": source, "duration AUC": roc_auc_score(g["label"], g["duration_s"])}
+        for (corpus, source), g in clips.groupby(["corpus", "source"])
+    ]
+    rows += [
+        {"corpus": corpus, "source": "(all)", "duration AUC": roc_auc_score(g["label"], g["duration_s"])}
+        for corpus, g in clips.groupby("corpus")
+    ]
+    t["splits_duration_auc"] = pd.DataFrame(rows).set_index(["corpus", "source"]).round(3)
+    return t
 
 
 # --- tables ---
@@ -367,18 +446,25 @@ SUMMARY_SECTIONS = [
     ("Anomalies", "anomalies", None),
     ("Sample rates", "sample_rates", None),
     ("Channels", "channels", None),
+    ("Splits (load_split; smart-turn English + TTD)", "splits", None),
+    ("Splits by corpus", "splits_by_corpus", None),
+    ("Splits by source", "splits_by_source", None),
+    ("Splits by --datasets choice", "splits_by_datasets_choice", None),
+    ("Clip length by source and label", "splits_by_source_and_label", None),
+    ("Clip length as a label cue (duration AUC)", "splits_duration_auc", None),
 ]
 
 
 def write_results(df: pd.DataFrame, out: Path) -> None:
     (out / "tables").mkdir(parents=True, exist_ok=True)
     tables = build_tables(df)
+    if "duration_s" in df:
+        tables |= split_tables(split_clips(df))
     for name, table in tables.items():
         table.to_csv(out / "tables" / f"{name}.csv")
     checks = id_checks(df)
     claims = spec_check(df)
     images = plots(df, out)
-    df.to_parquet(out / "clip_stats.parquet", index=False)
 
     summary = {
         "generated": str(date.today()),
@@ -390,10 +476,10 @@ def write_results(df: pd.DataFrame, out: Path) -> None:
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=1, default=str))
 
-    s = ["# smart-turn-data-v3.2: dataset exploration\n"]
+    s = ["# smart-turn-data-v3.2 and the training splits: dataset exploration\n"]
     s.append(
         f"Generated by `python scripts/explore_dataset.py` on {date.today()} from {len(df):,} rows "
-        f"({', '.join(REPOS.values())}). Full tables: `tables/*.csv`; per clip: `clip_stats.parquet`.\n"
+        f"({', '.join(REPOS.values())}), plus {TTD} for the splits. Full tables: `tables/*.csv`.\n"
     )
     s.append("## Task spec vs. measured\n")
     s.append(md_table(claims) + "\n")
@@ -423,7 +509,7 @@ def write_results(df: pd.DataFrame, out: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Explore smart-turn-data-v3.2 with Hugging Face datasets -> results/")
-    ap.add_argument("--out", type=Path, default=RESULTS_DIR)
+    ap.add_argument("--out", type=Path, default=RESULTS_DIR / "data_exploration")
     ap.add_argument("--num-proc", type=int, default=min(16, os.cpu_count() or 1), help="download / map processes")
     ap.add_argument("--no-audio", dest="audio", action="store_false", help="metadata only (skip decoding)")
     args = ap.parse_args()

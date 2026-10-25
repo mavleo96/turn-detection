@@ -1,0 +1,7 @@
+check,train (all),train (eng),test (all),test (eng),example ids
+decode error,0,0,0,0,
+empty audio,0,0,0,0,
+very short (< 1 s),345,315,50,48,"00c85b74-cb38-4222-b043-8a525eb0a0e9, 01194aa4-1055-44f9-b935-d3173ebb1ef0, 016dfe8e-5a81-4b51-a3d8-df97fd13ec66"
+clipping (> 0.1% of samples),5,0,1,0,"01cce49f-eac7-4067-8c97-ca137f3bf1eb, 58670565-25ff-4be2-8663-5e324362f0b4, 8540f428-4429-4afe-81ac-6df5147da18c"
+near-silent (peak < 0.01),0,0,0,0,
+not mono,0,0,0,0,

@@ -1,19 +1,20 @@
 import json
 import os
-from argparse import Namespace
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
-import pandas as pd
 import pytest
-import soundfile as sf
 import torch
-from transformers import EvalPrediction, WhisperFeatureExtractor
+from transformers import WhisperFeatureExtractor
 
-from predict import EoTPredictor
-from run_eval import evaluate_test, load_test_clips
-from turn_detection.data.constants import SAMPLE_RATE, WINDOW_S
+from run_eval import main as run_eval_main
+from run_eval import predict, summarize
+from turn_detection.data import RUNS_DIR, SAMPLE_RATE, WINDOW_S
+from turn_detection.data.dataset import load_split
 from turn_detection.model import EoTModel
-from turn_detection.train.metrics import best_f1_threshold, compute_metrics, eot_metrics
+from turn_detection.train import trainer as trainer_module
+from turn_detection.train.metrics import best_f1_threshold, eot_metrics
 from turn_detection.train.trainer import EoTTrainingArguments, train
 
 from .helpers import tiny_model
@@ -27,25 +28,25 @@ def test_metrics():
     assert m["f1"] == pytest.approx(0.8) and m["pr_auc"] == pytest.approx(5 / 6) and m["threshold"] == 0.5
     assert set(m) == {"threshold", "accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc"}
     assert "roc_auc" not in eot_metrics(np.array([1, 1]), np.array([0.9, 0.2]))  # undefined with one class
-    logits = np.log(probs / (1 - probs))
-    assert compute_metrics(EvalPrediction(predictions=logits, label_ids=labels)) == pytest.approx(m)
     assert best_f1_threshold(labels, np.array([0.9, 0.8, 0.2, 0.1])) == 0.8
 
 
 def training_args(root, **kw) -> EoTTrainingArguments:
-    return EoTTrainingArguments(
-        output_dir=str(root / "runs" / "smoke"),
-        manifests_dir=str(root / "manifests"),
-        num_train_epochs=2,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
-        dataloader_num_workers=0,
-        bf16=False,
-        use_cpu=True,
-        logging_steps=1,
-        report_to="none",
-        **kw,
-    )
+    # Note: a local Whisper dir with the default feature extractor, so train() needs no download
+    WhisperFeatureExtractor().save_pretrained(root / "whisper")
+    defaults = {
+        "output_dir": str(root / "runs" / "smoke"),
+        "whisper": str(root / "whisper"),
+        "num_train_epochs": 2,
+        "per_device_train_batch_size": 8,
+        "per_device_eval_batch_size": 8,
+        "dataloader_num_workers": 0,
+        "bf16": False,
+        "use_cpu": True,
+        "logging_steps": 1,
+        "report_to": "none",
+    }
+    return EoTTrainingArguments(**(defaults | kw))
 
 
 def last_state(run):
@@ -53,10 +54,10 @@ def last_state(run):
     return max(run.glob("checkpoint-*/trainer_state.json"), key=lambda p: int(p.parent.name.split("-")[1]))
 
 
-def test_train_smart_turn_end_to_end(artifacts, hf_splits):
+def test_train_end_to_end(tmp_path, hub, monkeypatch):
     model = tiny_model()
     encoder_before = {k: v.clone() for k, v in model.encoder.state_dict().items()}
-    run = train(training_args(artifacts, dataset="smart-turn"), model=model)
+    run = train(training_args(tmp_path), model=model)
     results = json.loads((run / "final_results.json").read_text())
     assert {"val_at_threshold_f1", "val_at_threshold_roc_auc", "val_at_threshold_fnr"} <= set(results)
     state = json.loads(last_state(run).read_text())
@@ -71,24 +72,47 @@ def test_train_smart_turn_end_to_end(artifacts, hf_splits):
     feature_extractor = WhisperFeatureExtractor.from_pretrained(run / "best")  # saved by the Trainer
     assert model.config.threshold == results["val_at_threshold_threshold"]
     assert feature_extractor.n_samples == WINDOW_S * SAMPLE_RATE and feature_extractor.nb_max_frames == 800
-    args = Namespace(batch_size=4, device="cpu", workers=0, bf16=False)
-    manifest_path = artifacts / "manifests" / "test.parquet"
-    manifest = pd.read_parquet(manifest_path)
-    clips = load_test_clips("smart-turn", hf_splits["test"], manifest_path)
-    result, preds = evaluate_test(model, feature_extractor, hf_splits["test"], clips, args, name="smart-turn")
-    assert result["n"] == len(manifest) == len(preds) and preds["prob"].between(0, 1).all()
-    assert preds["label"].tolist() == manifest["endpoint_bool"].astype(int).tolist()
-    assert {r["source"] for r in result["by_source"]} == {"human", "tts"} and "by_synthetic" in result
+    test = load_split("test")
+    preds = predict(model, feature_extractor, test, batch_size=4, workers=0, use_cpu=True)
+    assert list(preds.columns) == ["id", "source", "corpus", "label", "prob", "pred"]
+    assert preds["id"].tolist() == test["id"] and preds["label"].tolist() == test["label"]
+    assert (
+        preds["prob"].between(0, 1).all()
+        and preds["pred"].tolist() == (preds["prob"] >= results["val_at_threshold_threshold"]).astype(int).tolist()
+    )
 
-    wav = artifacts / "clip.wav"
-    sf.write(wav, 0.1 * np.random.default_rng(0).standard_normal(22050 * 3), 22050)
-    audio, sr = sf.read(wav, dtype="float32")
-    assert 0 <= EoTPredictor(run / "best").predict(audio, sr) <= 1
+    metrics = summarize(preds, model.config.threshold)
+    groups = {g: set(t["name"]) for g, t in metrics.groupby("group")}
+    assert groups == {
+        "all": {"all"},
+        "corpus": {"smart-turn", "ttd"},
+        "source": {"human", "tts", "rime_2", "spokenwoz", "seamless"},
+    }
+    assert list(metrics.columns) == [
+        "group",
+        "name",
+        "n",
+        "complete",
+        "accuracy",
+        "f1",
+        "roc_auc",
+        "pr_auc",
+        "fnr",
+        "fpr",
+    ]
+    by_corpus = metrics[metrics["group"] == "corpus"].set_index("name")["n"]
+    assert by_corpus.sum() == metrics.loc[metrics["group"] == "all", "n"].item() == len(test)
+
+    # the CLI writes predictions, metrics.csv and metrics.md
+    out = tmp_path / "eval"
+    monkeypatch.setattr("sys.argv", ["run_eval.py", str(run / "best"), "--out", str(out), "--workers", "0", "--cpu"])
+    run_eval_main()
+    assert {p.name for p in out.iterdir()} == {"predictions.parquet", "metrics.csv", "metrics.md"}
 
 
-def test_max_steps_and_limit(artifacts, hf_splits, monkeypatch):
-    monkeypatch.delenv("WANDB_PROJECT", raising=False)
-    args = training_args(artifacts, dataset="smart-turn", max_steps=1, max_train_samples=8, augment=False)
+def test_max_steps_and_limit(tmp_path, hub, monkeypatch):
+    monkeypatch.setenv("WANDB_PROJECT", "from-the-environment")  # --project wins
+    args = training_args(tmp_path, max_steps=1, max_train_samples=8, augment=False)
     run = train(args, model=tiny_model())
     assert EoTModel.from_pretrained(run / "best").config.loudness_dbfs == -30.0
     assert os.environ["WANDB_PROJECT"] == "turn-detection"
@@ -103,14 +127,19 @@ def test_cli_defaults_and_flags(monkeypatch):
     args = parse_args()
     assert (args.per_device_train_batch_size, args.num_train_epochs, args.lr_scheduler_type) == (64, 5, "cosine")
     assert args.metric_for_best_model == "roc_auc" and args.load_best_model_at_end and args.project == "turn-detection"
-    assert args.learning_rate == 1e-3 and args.augment and args.freeze_encoder
-    assert args.dataset == "ttd"
+    assert args.learning_rate == 1e-3 and args.augment and args.freeze_encoder and args.max_train_samples is None
+    assert args.datasets == ["smart-turn", "ttd"] and args.window_s == 8
+    assert Path(args.output_dir).parent == RUNS_DIR  # artifacts/runs/<timestamp>, not TrainingArguments' default
     argv = [
         "train",
         "--report_to",
         "none",
-        "--dataset",
-        "smart-turn",
+        "--max_train_samples",
+        "100",
+        "--datasets",
+        "ttd",
+        "--window_s",
+        "2",
         "--gain_db",
         "3",
         "--learning_rate",
@@ -120,55 +149,56 @@ def test_cli_defaults_and_flags(monkeypatch):
     ]
     monkeypatch.setattr("sys.argv", argv)
     args = parse_args()
-    assert (args.dataset, args.gain_db, args.augment, args.learning_rate) == ("smart-turn", 3.0, False, 1e-4)
-    assert '"dataset": "smart-turn"' in args.to_json_string()  # what wandb receives as the run config
+    assert (args.max_train_samples, args.gain_db, args.augment, args.learning_rate) == (100, 3.0, False, 1e-4)
+    assert args.window_s == 2
+    assert (
+        args.datasets == ["ttd"] and '"max_train_samples": 100' in args.to_json_string()
+    )  # what wandb receives as the run config
 
 
-def test_persistent_workers_with_augmentation_is_rejected(artifacts, hf_splits):
-    args = training_args(artifacts, dataloader_persistent_workers=True)
+def test_persistent_workers_with_augmentation_is_rejected(tmp_path, hub):
+    args = training_args(tmp_path, dataloader_persistent_workers=True)
     with pytest.raises(ValueError, match="same augmentation"):
         train(args, model=tiny_model())
 
 
-def test_train_and_evaluate_on_ttd(tmp_path, ttd_splits):
-    run = train(training_args(tmp_path, dataset="ttd"), model=tiny_model())  # its own validation split
-    results = json.loads((run / "final_results.json").read_text())
-    assert "val_at_threshold_roc_auc" in results and not any(k.startswith("heldout") for k in results)
-
+def test_train_and_evaluate_a_2s_window(tmp_path, hub):
+    args = training_args(tmp_path, window_s=2, max_steps=2, augment=False)
+    run = train(args, model=tiny_model(window_s=2))
     model = EoTModel.from_pretrained(run / "best")
     feature_extractor = WhisperFeatureExtractor.from_pretrained(run / "best")
-    args = Namespace(batch_size=4, device="cpu", workers=0, bf16=False)
-    clips = load_test_clips("ttd", ttd_splits["test"], tmp_path / "unused.parquet")
-    result, preds = evaluate_test(model, feature_extractor, ttd_splits["test"], clips, args, name="ttd")
-    assert result["n"] == 20 and preds["label"].tolist() == ttd_splits["test"]["label"]
-    assert {r["source"] for r in result["by_source"]} == {"spokenwoz", "seamless"} and "by_synthetic" not in result
+    assert model.config.window_s == 2 and model.encoder.config.max_source_positions == 100
+    assert feature_extractor.n_samples == 2 * SAMPLE_RATE  # saved with the model, used by run_eval
+    preds = predict(model, feature_extractor, load_split("test"), batch_size=4, workers=0, use_cpu=True)
+    assert len(preds) == len(load_split("test"))
+
+    with pytest.raises(ValueError, match="built for 8 s"):
+        train(training_args(tmp_path, window_s=2), model=tiny_model())
 
 
-def test_ttd_sets(tmp_path, ttd_splits):
-    from turn_detection.train.trainer import load_sets
+def test_best_is_logged_to_wandb(tmp_path, hub, monkeypatch):
+    # the HF W&B callback runs with W&B disabled; our upload goes to a fake to check what would be sent
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    logged = []
 
-    sets = load_sets("ttd", training_args(tmp_path, max_train_samples=10))
-    train_ids, val_ids = sets["train"][1], sets["val"][1]
-    assert len(train_ids) == 10 and len(val_ids) == 16 and set(sets) == {"train", "val"}
-    sources = {i.split("_")[0] for i in train_ids}
-    assert sources == {"spokenwoz", "seamless"}  # a random subset, not the first rows (all spokenwoz)
-    with pytest.raises(ValueError, match="dataset must be"):
-        load_sets("nope", training_args(tmp_path))
+    class FakeArtifact:
+        def __init__(self, name, type, metadata):
+            self.name, self.type, self.metadata, self.dirs = name, type, metadata, []
 
+        def add_dir(self, path):
+            self.dirs.append(Path(path))
 
-def test_train_on_both_datasets(artifacts, hf_splits, ttd_splits):
-    args = training_args(artifacts, dataset="ttd,smart-turn", max_steps=2, augment=False)
+    fake = SimpleNamespace(Artifact=FakeArtifact, run=SimpleNamespace(log_artifact=lambda a, aliases: logged.append(a)))
+    monkeypatch.setattr(trainer_module, "wandb", fake)
+    args = training_args(tmp_path, max_steps=2, augment=False, report_to="wandb", run_name="smoke")
     run = train(args, model=tiny_model())
-    results = json.loads((run / "final_results.json").read_text())
-    assert "val_at_threshold_roc_auc" in results
+
+    (artifact,) = logged
+    config = json.loads((run / "best" / "config.json").read_text())
+    assert artifact.name == "smoke-best" and artifact.type == "model" and artifact.dirs == [run / "best"]
+    assert artifact.metadata["threshold"] == config["threshold"] and artifact.metadata["window_s"] == 8
 
 
-def test_concat_passes_labels_and_epoch_through(hf_splits, ttd_splits):
-    from turn_detection.data.dataset import EoTConcat, EoTDataset
-
-    st = EoTDataset(hf_splits["train"], ["train-000", "train-001"], label_column="endpoint_bool")
-    ttd = EoTDataset(ttd_splits["train"], ["spokenwoz_train_001"])
-    both = EoTConcat([st, ttd])
-    assert len(both) == 3 and both.labels.tolist() == [1.0, 0.0, 1.0]
-    both.set_epoch(4)
-    assert st.epoch == ttd.epoch == 4
+def test_train_on_one_dataset(tmp_path, hub):
+    run = train(training_args(tmp_path, datasets=["ttd"], max_steps=2, augment=False), model=tiny_model())
+    assert "val_at_threshold_roc_auc" in json.loads((run / "final_results.json").read_text())

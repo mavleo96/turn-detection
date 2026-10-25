@@ -1,6 +1,7 @@
 """Collect per-clip features for the TTD vs smart-turn comparison: 20 showcase clips per dataset plus a larger
 random sample per group (smart-turn / spokenwoz / seamless). Writes features.parquet next to this script."""
 
+import io
 import json
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -9,11 +10,12 @@ from pathlib import Path
 import librosa
 import numpy as np
 import pandas as pd
+import soundfile as sf
 import torch
+from datasets import Audio, load_dataset
 
-from turn_detection.data.audio import decode, pad_window, prepare_clip
-from turn_detection.data.constants import MANIFESTS_DIR
-from turn_detection.data.dataset import load_split
+from turn_detection.data import LANGUAGE, SMART_TURN_TEST, TTD
+from turn_detection.data.audio import pad_window, prepare_clip
 from turn_detection.model import EoTModel
 
 OUT = Path(__file__).parent
@@ -88,6 +90,12 @@ def acoustic_features(x: np.ndarray) -> dict:
     return feats
 
 
+def decode(audio_bytes: bytes) -> tuple[np.ndarray, int]:
+    """FLAC bytes -> mono float32 (channel mean) at the file's rate, with soundfile, as when FINDINGS.md was written."""
+    x, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)  # (T, channels)
+    return x.mean(axis=1), sr
+
+
 def features_for(item: tuple[str, bytes]) -> dict:
     clip_id, audio_bytes = item
     x, sr = decode(audio_bytes)
@@ -120,12 +128,14 @@ def attention(models: dict, clips: list[bytes], feature_extractor) -> list[dict]
 
 
 def main() -> None:
-    # smart-turn: English test clips (manifest) with both models' predictions
-    st_ds = load_split("test")
-    st_manifest = pd.read_parquet(MANIFESTS_DIR / "test.parquet")
-    st = st_manifest[["id", "dataset", "synthetic"]].rename(columns={"dataset": "source"}).assign(group="smart-turn")
+    # smart-turn: English test clips with both models' predictions
+    # Note: FLAC bytes, decoded with soundfile (decode above)
+    st_ds = load_dataset(SMART_TURN_TEST, split="train").cast_column("audio", Audio(decode=False))
+    st_meta = st_ds.select_columns(["id", "language", "dataset", "synthetic"]).to_pandas()
+    st_meta = st_meta[st_meta.language == LANGUAGE].drop(columns="language").sort_values("id", ignore_index=True)
+    st = st_meta.rename(columns={"dataset": "source"}).assign(group="smart-turn")
 
-    ttd_ds = load_split("test", dataset="ttd")
+    ttd_ds = load_dataset(TTD, split="test").cast_column("audio", Audio(decode=False))
     ttd_meta = ttd_ds.select_columns(["id", "data_source", "meta"]).to_pandas()
     ttd = ttd_meta.rename(columns={"data_source": "source"}).assign(group=lambda d: d.source)
 

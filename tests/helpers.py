@@ -1,37 +1,15 @@
-"""Test helpers: fake metadata and audio, and a tiny random Whisper-shaped model for CPU tests."""
+"""Test helpers: fake Hub splits (FLAC audio + metadata) and a tiny random Whisper-shaped model for CPU tests."""
 
 import io
 
 import numpy as np
-import pandas as pd
 import soundfile as sf
 import torch
 from datasets import Audio, ClassLabel, Dataset, Features, Value
 from transformers import WhisperConfig
 
+from turn_detection.data import WINDOW_S
 from turn_detection.model import EoTConfig, EoTModel
-
-# (dataset, synthetic, clips): two TTS sources, two human sources (one too small for a fold), one tiny
-SOURCES = [("tts_a", True, 400), ("tts_b", True, 150), ("human_big", False, 320), ("human_small", False, 60)]
-
-
-def make_meta(sources=SOURCES, seed: int = 0) -> pd.DataFrame:
-    """Fake metadata with ids and labels alternating per source."""
-    rng = np.random.default_rng(seed)
-    rows = []
-    for dataset, synthetic, n in sources:
-        for i in range(n):
-            rows.append(
-                {
-                    "id": f"{dataset}-{rng.integers(1 << 40):011x}-{i}",
-                    "endpoint_bool": bool(i % 2 == 0 if dataset != "tts_b" else i % 3 == 0),
-                    "synthetic": synthetic,
-                    "midfiller": None if i % 5 == 0 else bool(i % 2),
-                    "endfiller": None if i % 5 == 0 else bool(i % 3 == 0),
-                    "dataset": dataset,
-                }
-            )
-    return pd.DataFrame(rows)
 
 
 def flac_bytes(x: np.ndarray, sr: int) -> bytes:
@@ -57,7 +35,8 @@ HF_FEATURES = Features(
 
 def fake_hf_split(n: int, prefix: str, seed: int = 0, sample_rate: int = 16000) -> Dataset:
     """A tiny split with the real schema: 16 kHz FLAC clips, 0.5-9.5 s long, odd rows ending in 250 ms of
-    silence; every 5th row Spanish; humans (synthetic False) at i = 0, 3, 6, ... with both labels."""
+    silence; every 5th row Spanish; humans (synthetic False) at i = 0, 3, 6, ... with both labels; every 7th row
+    from the holdout source rime_2."""
     rng = np.random.default_rng(seed)
     rows = []
     for i in range(n):
@@ -75,11 +54,10 @@ def fake_hf_split(n: int, prefix: str, seed: int = 0, sample_rate: int = 16000) 
                 "endfiller": None if i % 5 == 0 else i % 7 == 0,
                 "synthetic": synthetic,
                 "spoken_text": None,
-                "dataset": "tts" if synthetic else "human",
+                "dataset": "rime_2" if i % 7 == 6 else "tts" if synthetic else "human",  # rime_2: a holdout source
             }
         )
-    # Encoding through the Audio feature needs torchcodec; casting a {bytes, path} struct doesn't.
-    return Dataset.from_list(rows, features=HF_FEATURES).cast_column("audio", Audio(decode=False))
+    return Dataset.from_list(rows, features=HF_FEATURES).cast_column("audio", Audio())
 
 
 TTD_FEATURES = Features(
@@ -118,7 +96,7 @@ def fake_ttd_split(n: int, split: str, seed: int = 0) -> Dataset:
                 "meta": "{}",
             }
         )
-    return Dataset.from_list(rows, features=TTD_FEATURES).cast_column("audio", Audio(decode=False))
+    return Dataset.from_list(rows, features=TTD_FEATURES).cast_column("audio", Audio(sampling_rate=16000))
 
 
 def tiny_whisper_config() -> WhisperConfig:
@@ -136,6 +114,6 @@ def tiny_whisper_config() -> WhisperConfig:
     )
 
 
-def tiny_model(seed: int = 0) -> EoTModel:
+def tiny_model(seed: int = 0, window_s: int = WINDOW_S) -> EoTModel:
     torch.manual_seed(seed)
-    return EoTModel(EoTConfig(encoder=tiny_whisper_config().to_dict()))
+    return EoTModel(EoTConfig(encoder_config=tiny_whisper_config().to_dict(), window_s=window_s))

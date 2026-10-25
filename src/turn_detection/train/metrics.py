@@ -1,18 +1,8 @@
-"""Metrics for P(turn complete) with scikit-learn. Positive class = turn complete.
-
-- `fpr` (false positive rate): incomplete turns predicted complete, i.e. the agent interrupts the user.
-- `fnr` (false negative rate): complete turns predicted incomplete, i.e. the agent waits too long.
-- `pr_auc`: area under the precision-recall curve (average precision), next to `roc_auc`.
-"""
-
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, average_precision_score, f1_score, precision_recall_curve, roc_auc_score
-from transformers import EvalPrediction
 
-
-def sigmoid(logits: np.ndarray) -> np.ndarray:
-    return 1 / (1 + np.exp(-np.asarray(logits, dtype=np.float64)))
+METRICS = ["accuracy", "f1", "roc_auc", "pr_auc", "fnr", "fpr"]
 
 
 def eot_metrics(labels: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> dict:
@@ -35,29 +25,25 @@ def eot_metrics(labels: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -
     return {"threshold": float(threshold), **{k: float(v) for k, v in m.items()}}
 
 
-def compute_metrics(eval_pred: EvalPrediction) -> dict:
-    """Trainer hook: metrics at threshold 0.5 from the model's logits."""
-    return eot_metrics(eval_pred.label_ids, sigmoid(eval_pred.predictions))
-
-
 def best_f1_threshold(labels: np.ndarray, probs: np.ndarray) -> float:
     """Threshold maximizing F1 (chosen on val, then fixed for test)."""
     precision, recall, thresholds = precision_recall_curve(labels, probs)
     f1 = 2 * precision * recall / np.maximum(precision + recall, 1e-12)
-    best = int(np.argmax(f1[:-1]))  # the last (precision 1, recall 0) point has no threshold
+    # Note: the last (precision 1, recall 0) point has no threshold
+    best = int(np.argmax(f1[:-1]))
     return float(thresholds[best])
 
 
 def breakdown(df: pd.DataFrame, by: str, threshold: float) -> pd.DataFrame:
-    """Metrics per group of `df` (columns: label, prob, and `by`)."""
-    columns = ("accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc")
+    """Metrics per group of `df` (columns: label, prob, and `by`): n, complete share and METRICS."""
 
     rows = []
     for key, g in df.groupby(by, sort=True):
         m = eot_metrics(g["label"].to_numpy(), g["prob"].to_numpy(), threshold)
-        row = {by: key, "n": len(g)}
-        for k in columns:
-            row[k] = m.get(k)  # roc_auc and pr_auc are missing for single-class groups
+        row = {by: key, "n": len(g), "complete": g["label"].mean()}
+        # Note: roc_auc and pr_auc are missing for single-class groups
+        for k in METRICS:
+            row[k] = m.get(k)
         rows.append(row)
 
     return pd.DataFrame(rows)

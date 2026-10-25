@@ -1,0 +1,13 @@
+dataset,train,test,languages,english,synthetic_share,complete_share
+chirp3_1,146627,16254,14,14586,1.0,0.4956
+chirp3_2,67646,8428,9,0,1.0,0.499
+liva_1,30922,3831,1,34753,0.0,0.4989
+midcentury_1,8489,1044,1,9533,0.0,0.4828
+mundo_1,3986,496,1,0,0.0,0.4987
+human_5,3527,402,1,3929,0.0,0.5085
+rime_2,3505,394,1,3899,1.0,0.454
+orpheus_endfiller_1,1661,181,1,1842,1.0,0.4864
+orpheus_grammar_1,1570,163,1,1733,1.0,0.517
+orpheus_midfiller_1,1542,140,1,1682,1.0,0.4935
+chirp3_3_short,792,104,1,896,1.0,0.4319
+human_convcollector_1,679,90,1,769,0.0,0.4694

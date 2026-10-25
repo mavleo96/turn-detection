@@ -1,5 +1,3 @@
-"""Building blocks of the EoT head."""
-
 import torch
 from torch import nn
 
