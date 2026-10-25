@@ -2,8 +2,8 @@
 
 End-of-turn (EoT) detection for voice agents: when the user pauses, is their turn complete? The model sees the last
 **2, 4 or 8 s** (`window_s`, default 8) of 16 kHz mono audio, ending at the pause where a VAD stopped, and outputs
-P(turn complete). A Whisper Tiny encoder with a small head, trained on public conversation data plus our own TTD set,
-served as an ONNX model behind FastAPI.
+P(turn complete). A Whisper Tiny encoder with a small head, trained on Pipecat's smart-turn (single-speaker
+utterances) plus our TTD set (two-party conversations), served as an ONNX model behind FastAPI.
 
 ## Results
 
@@ -21,8 +21,13 @@ encoder, 5 epochs, threshold chosen on validation. Full tables: `results/eval/`.
 
 - **both, 8 s** at its threshold: F1 0.826, FPR 0.296 (incomplete turns called complete: the agent interrupts), FNR
   0.101 (complete turns missed: the agent waits).
-- **Against a plain VAD:** a silence timeout has to wait 0.74 s after speech, 0.52 s longer than our model, to
-  interrupt as rarely on TTD (`results/eval/vad-timeout/`).
+- **As a system on TTD** (`results/eval/system/`): the model decides 0.224 s after speech; if it says incomplete, a
+  fallback timeout T ends the turn unless the user speaks again first. The fallback catches missed turns but adds
+  interruptions: with T = 1.5 s, FPR 0.356, FNR 0.021, mean response delay 0.34 s (91% of the completed turns it ends
+  are ended by the model at 0.224 s); a timeout alone at T = 0.75 s interrupts as often (FPR 0.311, FNR 0.029) and
+  always answers after 0.75 s. Delays exclude inference time.
+- **Against Smart Turn at the same interruption rate** (its TTD FPR, 0.229; our threshold 0.546, chosen on TTD
+  validation): we miss 17.5% of completed turns, Smart Turn 42%.
 - **Smart Turn v3.2** was trained on all of smart-turn (its smart-turn number is in-domain) and never on TTD, whose
   clips end ~0.5 s sooner after speech than smart-turn's: it misses 42% of completed turns there.
 - **Serving** (both, 8 s; ONNX Runtime on 2 CPU cores): one caller p50 46 ms / p95 67 ms, 20.5 req/s; up to
@@ -37,7 +42,7 @@ optimistic.
 
 | | smart-turn ([pipecat-ai v3.2](https://huggingface.co/datasets/pipecat-ai/smart-turn-data-v3.2-train), CC-BY-4.0) | TTD ([mavleo96/turn-detection-data](https://huggingface.co/datasets/mavleo96/turn-detection-data)) |
 |---|---|---|
-| What | single-speaker utterances, complete or cut off (67% human, 33% TTS); English only here | real two-party conversations: SpokenWOZ phone calls and Seamless Interaction; a clip ends where a VAD fired, 0.224 s after speech; label: does the other speaker talk next |
+| What | single-speaker utterances, complete or cut off (67% human, 33% TTS); English only here | real two-party conversations: SpokenWOZ phone calls and Seamless Interaction; a clip ends where a VAD fired, 0.224 s after speech; label: does the other speaker talk next (SpokenWOZ: annotated turns; Seamless: word timestamps) |
 | Train / validation / test | 52,893 / 5,877 / 7,820 | 333,280 / 37,600 / 60,574 |
 | Split | test: the official test split; the rest 90/10 at random (seed 42), without the sources `human_5` and `rime_2`, which appear only in test | the dataset's own splits; no conversation (Seamless: no participant) is in two splits |
 
@@ -79,6 +84,7 @@ pytest                       # ~1 min, CPU, no network
 | `python scripts/run_eval.py <run>/best` | one of our checkpoints on the test split | `results/eval/<run>/best/` | ~2 min |
 | `python scripts/run_eval_baseline.py` | Pipecat's Smart Turn v3.2 on the same split | `results/eval/smart-turn-v3.2-gpu/` | ~10 min (CPU) |
 | `python scripts/run_eval_vad.py` | silence-timeout VAD on TTD: errors vs latency | `results/eval/vad-timeout/` | < 1 min |
+| `python scripts/run_eval_system.py` | model + fallback timeout on TTD; matched operating point vs Smart Turn (from both-8s's and Smart Turn's tracked test predictions; needs both-8s's checkpoint) | `results/eval/system/` | |
 | `python scripts/explore_dataset.py` | the smart-turn repos and the splits | `results/data_exploration/` | a few minutes |
 | `python scripts/samples.py` | listening samples | `results/samples/` | seconds |
 | `python scripts/export_onnx.py <run>/best` | checkpoint → `model.onnx` for `serve/` (checked against torch) | `<run>/best/model.onnx` | seconds |
@@ -96,7 +102,8 @@ on the staged files and stops if they change anything.
 
 ## Limitations
 
-- **English only**, and TTD's labels come from conversation timing (who speaks next), not human judgement.
+- **English only**, and TTD's labels come from conversation timing (does the other speaker talk next, from SpokenWOZ's
+  annotated turns and Seamless's word timestamps), not human judgement of completeness.
 - **Possible leakage within smart-turn:** no speaker or sentence ids, so train and validation are split per clip and
   may share speakers or sentences; only the holdout sources are truly unseen.
 - **Seamless stays at 0.73–0.74** for every model trained with TTD (0.67–0.69 without): its label depends on the other
