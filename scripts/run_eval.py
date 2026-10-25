@@ -4,7 +4,8 @@ Preprocessing (window, band limit, loudness) comes from the model's config and t
 checkpoint, as in training; predictions use the model's validation threshold (config.threshold). Writes to --out
 (default results/eval/<run>/<checkpoint>/, e.g. results/eval/both-8s-5ep-<timestamp>/best/):
   predictions.parquet  one row per test clip: id, source, corpus, label, prob, pred
-  metrics.csv          per group (all, corpus, source): n, complete share, accuracy, f1, roc_auc, pr_auc, fnr, fpr
+  metrics.csv          per group (all, corpus, source): n, complete share, accuracy, f1, roc_auc, pr_auc, fnr, fpr,
+                       and a 95% bootstrap interval of roc_auc (clips resampled; optimistic for TTD, see metrics.py)
   metrics.md           the same, readable
 
 Run (from the repo root):  python scripts/run_eval.py artifacts/runs/<run>/best
@@ -22,7 +23,7 @@ from transformers import Trainer, TrainingArguments, WhisperFeatureExtractor
 from turn_detection.data import RESULTS_DIR
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.model import EoTModel
-from turn_detection.train.metrics import METRICS, breakdown
+from turn_detection.train.metrics import INTERVAL, METRICS, breakdown
 
 GROUPS = ["all", "corpus", "source"]
 
@@ -62,7 +63,7 @@ def summarize(preds: pd.DataFrame, threshold: float) -> pd.DataFrame:
     for group in GROUPS:
         table = breakdown(preds.assign(all="all"), group, threshold).rename(columns={group: "name"})
         tables.append(table.assign(group=group))
-    return pd.concat(tables, ignore_index=True)[["group", "name", "n", "complete", *METRICS]]
+    return pd.concat(tables, ignore_index=True)[["group", "name", "n", "complete", *METRICS, *INTERVAL]]
 
 
 def markdown(metrics: pd.DataFrame, title: str) -> str:

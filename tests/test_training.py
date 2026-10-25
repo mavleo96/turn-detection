@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sklearn.metrics import roc_auc_score
 from transformers import WhisperFeatureExtractor
 
 from run_eval import main as run_eval_main
@@ -14,7 +15,7 @@ from turn_detection.data import RUNS_DIR, SAMPLE_RATE, WINDOW_S
 from turn_detection.data.dataset import load_split
 from turn_detection.model import EoTModel
 from turn_detection.train import trainer as trainer_module
-from turn_detection.train.metrics import best_f1_threshold, eot_metrics
+from turn_detection.train.metrics import best_f1_threshold, eot_metrics, roc_auc_interval
 from turn_detection.train.trainer import EoTTrainingArguments, train
 
 from .helpers import tiny_model
@@ -29,6 +30,11 @@ def test_metrics():
     assert set(m) == {"threshold", "accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc"}
     assert "roc_auc" not in eot_metrics(np.array([1, 1]), np.array([0.9, 0.2]))  # undefined with one class
     assert best_f1_threshold(labels, np.array([0.9, 0.8, 0.2, 0.1])) == 0.8
+    rng = np.random.default_rng(0)
+    y = rng.integers(0, 2, 2000)
+    score = y + rng.normal(0, 1.5, 2000)  # a weak score: AUC ~0.68
+    lo, hi = roc_auc_interval(y, score)
+    assert lo < roc_auc_score(y, score) < hi and hi - lo < 0.06
 
 
 def training_args(root, **kw) -> EoTTrainingArguments:
@@ -99,7 +105,10 @@ def test_train_end_to_end(tmp_path, hub, monkeypatch):
         "pr_auc",
         "fnr",
         "fpr",
+        "roc_auc_lo",
+        "roc_auc_hi",
     ]
+    assert (metrics.roc_auc_lo <= metrics.roc_auc).all() and (metrics.roc_auc <= metrics.roc_auc_hi).all()
     by_corpus = metrics[metrics["group"] == "corpus"].set_index("name")["n"]
     assert by_corpus.sum() == metrics.loc[metrics["group"] == "all", "n"].item() == len(test)
 

@@ -38,3 +38,14 @@ def test_samples(hf_splits, tmp_path):
     csv = export_samples(tmp_path / "samples", per_bucket=3, seed=0)
     assert len(csv) == 4 * 3 and csv["bucket"].nunique() == 4 and set(csv["split"]) <= {"train", "test"}
     assert all((tmp_path / "samples" / f).exists() for f in csv["file"])
+
+
+def test_vad_timeout_endpointer():
+    from run_eval_vad import vad_metrics
+
+    # complete turns: the user stays silent (or never speaks again); incomplete: the user speaks again after 0.4 s
+    clips = pd.DataFrame({"label": [1, 1, 0, 0], "silence_s": [2.0, np.inf, 0.4, 0.4]})
+    assert vad_metrics(clips, 0.3)["fpr"] == 1.0  # fires before the user resumes: interrupts both
+    m = vad_metrics(clips, 0.5)
+    assert m["fpr"] == 0.0 and m["fnr"] == 0.0 and m["n"] == 4 and m["complete"] == 0.5
+    assert vad_metrics(clips, 3.0)["fnr"] == 0.5  # waits past the 2 s silence of a complete turn

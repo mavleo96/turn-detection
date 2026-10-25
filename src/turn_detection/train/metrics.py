@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, average_precision_score, f1_score, precision_recall_curve, roc_auc_score
 
 METRICS = ["accuracy", "f1", "roc_auc", "pr_auc", "fnr", "fpr"]
+INTERVAL = ["roc_auc_lo", "roc_auc_hi"]  # 95% bootstrap interval of roc_auc
 
 
 def eot_metrics(labels: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> dict:
@@ -34,8 +35,22 @@ def best_f1_threshold(labels: np.ndarray, probs: np.ndarray) -> float:
     return float(thresholds[best])
 
 
+def roc_auc_interval(labels: np.ndarray, probs: np.ndarray, n_boot: int = 1000, seed: int = 0) -> tuple[float, float]:
+    """95% bootstrap interval of ROC AUC, resampling clips with replacement."""
+    # Note: clips are treated as independent; TTD clips from one conversation are not, so the interval is optimistic
+    labels, probs = np.asarray(labels).astype(int), np.asarray(probs)
+    rng = np.random.default_rng(seed)
+    aucs = []
+    for _ in range(n_boot):
+        i = rng.integers(0, len(labels), len(labels))  # (N,)
+        if labels[i].min() != labels[i].max():
+            aucs.append(roc_auc_score(labels[i], probs[i]))
+    lo, hi = np.percentile(aucs, [2.5, 97.5])
+    return float(lo), float(hi)
+
+
 def breakdown(df: pd.DataFrame, by: str, threshold: float) -> pd.DataFrame:
-    """Metrics per group of `df` (columns: label, prob, and `by`): n, complete share and METRICS."""
+    """Metrics per group of `df` (columns: label, prob, and `by`): n, complete share, METRICS and INTERVAL."""
 
     rows = []
     for key, g in df.groupby(by, sort=True):
@@ -44,6 +59,8 @@ def breakdown(df: pd.DataFrame, by: str, threshold: float) -> pd.DataFrame:
         # Note: roc_auc and pr_auc are missing for single-class groups
         for k in METRICS:
             row[k] = m.get(k)
+        if "roc_auc" in m:
+            row["roc_auc_lo"], row["roc_auc_hi"] = roc_auc_interval(g["label"].to_numpy(), g["prob"].to_numpy())
         rows.append(row)
 
     return pd.DataFrame(rows)

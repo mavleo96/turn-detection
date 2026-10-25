@@ -51,7 +51,8 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   - `train/` HF Trainer setup (`trainer.py`), sklearn metrics (`metrics.py`), CLI `python -m turn_detection.train`.
 - `scripts/`: `run_eval.py <checkpoint>` (test split -> `results/eval/<run>/<checkpoint>/`, tracked: per-clip
   predictions + metrics for all, per corpus, per source; at the model's threshold), `run_eval_baseline.py`
-  (Pipecat's Smart Turn v3.2 ONNX with its own preprocessing, threshold 0.5, onnxruntime on CPU, same outputs) and
+  (Pipecat's Smart Turn v3.2 ONNX with its own preprocessing, threshold 0.5, onnxruntime on CPU, same outputs),
+  `run_eval_vad.py` (silence-timeout VAD on TTD: error rates vs added latency; TTD only, from its timing meta) and
   the exploration scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
   `load_dataset` in `dataset`, `explore_dataset` and `samples`); for serving, `export_onnx.py <checkpoint>`
   (-> `<checkpoint>/model.onnx`, fp32, sigmoid included, checked against torch) and `benchmark.py` (closed-loop load test:
