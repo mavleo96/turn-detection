@@ -1,4 +1,4 @@
-# Ruff config for the whole repo (src/, scripts/, tests/, results/).
+# Ruff config for the whole repo (src/, scripts/, tests/, serve/, results/).
 target-version = "py312"
 # Modules found here are first-party for import sorting.
 src = ["src", "scripts", "."]
@@ -9,4 +9,6 @@ line-length = 120
 select = ["E", "F", "W", "I"]
 
 [lint.isort]
-known-first-party = ["backend", "frontend"]
+# Note: with "." in src, a local wandb/ run directory would make wandb first-party (import order then depends on
+# the machine)
+known-third-party = ["wandb"]

@@ -1,8 +1,9 @@
 # The `turn_detection` package (src/turn_detection/: data, model, train).
 #   pip install -e ".[train]"   training, evaluation, scripts and tests (editable: turn_detection.data paths resolve
 #                               to this checkout); the exact training env is pinned in requirements.txt
-#   pip install .               core only: the model and audio preprocessing, enough to serve (see serve/); decoding
-#                               is the caller's (torchcodec as in training, or anything that gives 16 kHz mono)
+#   pip install .               core only: the model and audio preprocessing; decoding is the caller's (torchcodec
+#                               as in training, or anything that gives 16 kHz mono). serve/ installs it with
+#                               --no-deps and uses only turn_detection.data (the model runs in ONNX Runtime)
 
 [build-system]
 requires = ["setuptools>=69"]

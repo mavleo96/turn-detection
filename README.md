@@ -195,7 +195,7 @@ incomplete: the agent waits too long), ROC AUC and PR AUC (average precision).
   train clips are longer and get cropped; shorter ones are left-padded with zeros so the clip end (the pause) always
   sits at the window end (`results/data_exploration/EXPLORE.md`).
 - **16 kHz input, telephone band**: all audio is 16 kHz and goes through an 8 kHz round trip (`narrowband`) in
-  training and evaluation; serving must do the same (the `serve` branch).
+  training and evaluation; serving must do the same (`serve/`).
 - **Possible leakage within smart-turn**: `spoken_text` is empty, so complete and truncated versions of the same
   sentence can't be grouped, and train/validation is split per clip (no speaker ids): the same speaker or sentence
   can be in both, so smart-turn validation scores may be optimistic. The holdout sources (`human_5`, `rime_2`) are

@@ -5,10 +5,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 from transformers import Trainer, TrainerCallback, TrainingArguments, WhisperFeatureExtractor
 from transformers.trainer_utils import IntervalStrategy, SaveStrategy, SchedulerType
 
-import wandb
 from turn_detection.data import DATASETS, LOUDNESS_DBFS, NARROWBAND, RUNS_DIR, WINDOW_S
 from turn_detection.data.dataset import EoTCollator, EoTDataset, load_split
 from turn_detection.data.transforms import GAIN_DB, NOISE_P, build_augment

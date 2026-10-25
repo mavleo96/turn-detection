@@ -53,11 +53,15 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   predictions + metrics for all, per corpus, per source; at the model's threshold), `run_eval_baseline.py`
   (Pipecat's Smart Turn v3.2 ONNX with its own preprocessing, threshold 0.5, onnxruntime on CPU, same outputs) and
   the exploration scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
-  `load_dataset` in `dataset`, `explore_dataset` and `samples`).
+  `load_dataset` in `dataset`, `explore_dataset` and `samples`); for serving, `export_onnx.py <checkpoint>`
+  (-> `<checkpoint>/model.onnx`, fp32, sigmoid included, checked against torch) and `benchmark.py` (load test).
 - The browser mic -> Silero VAD + Nemotron streaming ASR demo was removed from `main`; it is on the `backup` branch
   and in git history (before the removal commit).
-- `serve/` (FastAPI + micro-batching, CPU Dockerfile) lives on the `serve` branch only (ignored on `main`).
-- Generated, gitignored: `artifacts/` (runs, models/untrained), `results/` (analyses), except the tracked
+- `serve/`: the inference API (FastAPI + micro-batching; ONNX Runtime on CPU, no torch; Dockerfile without
+  torch). It needs `model.onnx` in the checkpoint dir, decodes with soundfile (not torchcodec) and reads the
+  window, preprocessing and threshold from `config.json`. Details and measurements: `serve/README.md`,
+  `serve/CLAUDE.md`.
+- Generated, gitignored: `artifacts/` (runs, downloaded checkpoints), `results/` (analyses), except the tracked
   `results/eval/` (run_eval output), `results/data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`) and
   `results/ttd_vs_smart_turn/` (`FINDINGS.md`).
 
@@ -96,6 +100,9 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
   source (SpokenWOZ first), so never take "the first N rows".
 - smart-turn English: 69% human speech; clips end ~0.7 s after the last speech; train/val split is per clip
   (possible speaker leakage, except for the holdout sources); Hub rows are shuffled; no train/test id overlap.
+- All dataset clips are 16 kHz mono (smart-turn: `explore_dataset.py`, all 302,473; TTD: 600 sampled). Serve's
+  soundfile decoding matches torchcodec exactly for 16 kHz mono; stereo differs only in level (removed by loudness
+  normalization); 44.1/48 kHz input matches after the band limit; 8 kHz input differs by ~-35 dB (resamplers).
 - Full analysis (peer-reviewed): `results/ttd_vs_smart_turn/FINDINGS.md`.
 
 ## Open ideas (not done)
@@ -103,11 +110,3 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
 - Unfreeze the encoder with a separate low encoder LR (the trainer has one LR for all params today).
 - Re-cut smart-turn clips to VAD-style endings; match the demo VAD to the dataset's.
 
-## Known issues (deferred)
-- The `serve` branch is behind `main`: it imports `turn_detection.data.audio.decode` (removed: decoding is the
-  caller's now) and `turn_detection.data.constants` (now `turn_detection.data`), and calls `prepare_clip` /
-  `pad_window` the old way (settings are keyword-only now, incl. `window_s` from the model config). Serving should
-  decode like training: torchcodec `AudioDecoder(..., sample_rate=16000, num_channels=1)` (stereo -> (L + R) /
-  sqrt 2, FFmpeg resampling); if torchcodec/FFmpeg can't go in the serving image, serve defines its own decoder
-  (soundfile channel mean differs only for stereo, by 3 dB, which loudness normalization removes). All dataset
-  clips are 16 kHz mono (smart-turn: `explore_dataset.py`, all 302,473; TTD: 600 sampled).
