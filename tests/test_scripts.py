@@ -49,3 +49,22 @@ def test_vad_timeout_endpointer():
     m = vad_metrics(clips, 0.5)
     assert m["fpr"] == 0.0 and m["fnr"] == 0.0 and m["n"] == 4 and m["complete"] == 0.5
     assert vad_metrics(clips, 3.0)["fnr"] == 0.5  # waits past the 2 s silence of a complete turn
+
+
+def test_model_plus_fallback_timeout():
+    from run_eval_system import system, threshold_for_fpr
+
+    # turn 0: an incomplete pause (user resumes after 0.4 s), then the complete one (never speaks again)
+    # turn 1: one complete pause, the user's next speech 3 s later
+    clips = pd.DataFrame({"label": [0, 1, 1], "silence_s": [0.4, np.inf, 3.0], "turn": [0, 0, 1]})
+    model = pd.Series([False, False, True])
+    alone = system(clips, model, None)  # no fallback: a user who never speaks again isn't "ended" by inf >= inf
+    assert alone["fnr"] == 0.5 and alone["fpr"] == 0.0 and alone["delay_mean_s"] == 0.224
+    m = system(clips, model, 0.3)  # the fallback fires on the incomplete pause (0.4 >= 0.3) and on the complete one
+    assert m["fpr"] == 1.0 and m["fnr"] == 0.0 and m["turns_interrupted"] == 0.5
+    assert m["delay_mean_s"] == np.mean([0.3, 0.224]) and m["turns_interrupted_of_those_with_a_pause"] == 1.0
+    assert system(clips, model, 0.5)["fpr"] == 0.0  # the user resumes first
+
+    labels, probs = np.array([0, 0, 0, 0, 1]), np.array([0.1, 0.2, 0.3, 0.9, 0.8])
+    t = threshold_for_fpr(labels, probs, 0.25)  # at most 1 of 4 incomplete clips may score >= t
+    assert (probs[labels == 0] >= t).mean() <= 0.25 and (probs[labels == 0] >= t).mean() == 0.25
