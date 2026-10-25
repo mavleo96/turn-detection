@@ -74,7 +74,7 @@ undecodable, too long, NaN samples), 415 (other content types), 422 (bad `sample
 ## Docker
 
 Build from the repo root (the image needs `pyproject.toml`, `src/` and `serve/`; see
-`Dockerfile.dockerignore`). The model directory is mounted, not baked in:
+the root `.dockerignore`). The model directory is mounted, not baked in:
 
 ```bash
 docker build -f serve/Dockerfile -t eot-serve .

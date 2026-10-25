@@ -1,0 +1,9 @@
+# For serve/Dockerfile (the only Dockerfile): the build context is the repo root, and the image needs only
+# pyproject.toml, src/ and serve/. At the root so both BuildKit and the legacy builder read it.
+*
+!pyproject.toml
+!src/
+!serve/
+**/__pycache__
+**/*.egg-info
+serve/tests/
