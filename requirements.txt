@@ -29,6 +29,9 @@ wandb==0.31.0
 # Report plots
 matplotlib==3.11.2
 
+# Analyses: Silero VAD (results/ttd_vs_smart_turn/collect.py; installed with --no-deps, it needs only torch)
+silero-vad==6.2.3
+
 # Threshold selection (precision-recall curve)
 scikit-learn==1.9.1
 

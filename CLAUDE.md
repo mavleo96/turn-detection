@@ -24,8 +24,8 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
   39 GB + test 5 GB. Building the splits takes ~20 s the first time (cached by `datasets` after that).
 - W&B logs to a CoreWeave-hosted server (`api.forge.coreweave.com`, team `mavleo96-team`, project `turn-detection`);
   `train()` sets `WANDB_PROJECT` from `--project` (the HF W&B callback ignores `args.project`).
-- librosa `pyin` segfaults in `/venv/turn` (numba 0.68); use a numpy pitch tracker. Use spawned (not forked)
-  process pools when librosa/numba is involved.
+- librosa is not installed in `/venv/turn` (its `pyin` segfaulted with numba 0.68): the analyses use a numpy pitch
+  tracker and scipy's STFT. Use spawned (not forked) process pools for per-clip work with torch (Silero VAD).
 - `environment.yml` = conda export of `turn`; `requirements.txt` = pinned training env; `pyproject.toml` = core deps
   (model + audio) + `[train]` extra.
 
@@ -104,7 +104,8 @@ Batch-1 latency: ~14 ms GPU, ~120 ms CPU. F1 thresholds lean to interrupting (TT
 - All dataset clips are 16 kHz mono (smart-turn: `explore_dataset.py`, all 302,473; TTD: 600 sampled). Serve's
   soundfile decoding matches torchcodec exactly for 16 kHz mono; stereo differs only in level (removed by loudness
   normalization); 44.1/48 kHz input matches after the band limit; 8 kHz input differs by ~-35 dB (resamplers).
-- Full analysis (peer-reviewed): `results/ttd_vs_smart_turn/FINDINGS.md`.
+- Full analysis (peer-reviewed; rewritten 2026-10-25 for the current models, reproduced on the same 940 clips):
+  `results/ttd_vs_smart_turn/FINDINGS.md` (`collect.py` -> `analyze.py` -> `tables.md`).
 
 ## Open ideas (not done)
 - Threshold for a target FPR instead of best F1.

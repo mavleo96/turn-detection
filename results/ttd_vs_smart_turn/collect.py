@@ -1,5 +1,9 @@
 """Collect per-clip features for the TTD vs smart-turn comparison: 20 showcase clips per dataset plus a larger
-random sample per group (smart-turn / spokenwoz / seamless). Writes features.parquet next to this script."""
+random sample per group (smart-turn / spokenwoz / seamless; fixed seeds, so always the same clips). Per clip: acoustic
+features, Silero VAD, the models' predictions (from results/eval) and attention, transcripts (TTD: the dataset's;
+smart-turn: Whisper Tiny). Writes features.parquet, layer_weights.json and spec_*.png next to this script.
+
+Run (from the repo root):  python results/ttd_vs_smart_turn/collect.py"""
 
 import io
 import json
@@ -7,20 +11,26 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-import librosa
 import numpy as np
 import pandas as pd
 import soundfile as sf
 import torch
 from datasets import Audio, load_dataset
+from scipy.signal import stft
 
-from turn_detection.data import LANGUAGE, SMART_TURN_TEST, TTD
+from turn_detection.data import LANGUAGE, RESULTS_DIR, SMART_TURN_TEST, TTD
 from turn_detection.data.audio import pad_window, prepare_clip
 from turn_detection.model import EoTModel
 
 OUT = Path(__file__).parent
 RUNS = Path("/workspace/turn-detection/artifacts/runs")
-MODELS = {"ttd": RUNS / "ttd-5ep-20261024-052319/best", "st": RUNS / "st-5ep-20261024-055918/best"}
+# Our 8 s models (frozen encoder, 5 epochs) by training data; checkpoints in artifacts/, predictions in results/eval/
+MODELS = {
+    "ttd": "ttd-8s-5ep-20261024-232232",
+    "st": "smart-turn-8s-5ep-20261024-233637",
+    "both": "both-8s-5ep-20261024-225310",
+}
+BASELINE = RESULTS_DIR / "eval" / "smart-turn-v3.2-gpu" / "predictions.parquet"  # Pipecat's Smart Turn v3.2
 SR = 16000
 BIG_N = 300
 
@@ -90,6 +100,37 @@ def acoustic_features(x: np.ndarray) -> dict:
     return feats
 
 
+_vad = {}
+
+
+def vad_features(x: np.ndarray) -> dict:
+    """Silero VAD (threshold 0.5, min silence 100 ms, no padding): non-speech after the last speech, total non-speech,
+    speech vs non-speech level."""
+    from silero_vad import get_speech_timestamps, load_silero_vad
+
+    if "model" not in _vad:
+        torch.set_num_threads(1)
+        _vad["model"] = load_silero_vad()
+    ts = get_speech_timestamps(
+        torch.from_numpy(x),
+        _vad["model"],
+        sampling_rate=SR,
+        threshold=0.5,
+        min_silence_duration_ms=100,
+        speech_pad_ms=0,
+    )
+    speech = np.zeros(len(x), dtype=bool)
+    for t in ts:
+        speech[t["start"] : t["end"]] = True
+    feats = {"nonspeech_s": (~speech).sum() / SR, "vad_trailing_s": np.nan, "vad_snr_db": np.nan}
+    if ts:
+        feats["vad_trailing_s"] = (len(x) - ts[-1]["end"]) / SR
+    if speech.any() and (~speech).any():
+        level = lambda v: 10 * np.log10(np.mean(np.square(v, dtype=np.float64)) + 1e-12)  # noqa: E731
+        feats["vad_snr_db"] = level(x[speech]) - level(x[~speech])
+    return feats
+
+
 def decode(audio_bytes: bytes) -> tuple[np.ndarray, int]:
     """FLAC bytes -> mono float32 (channel mean) at the file's rate, with soundfile, as when FINDINGS.md was written."""
     x, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)  # (T, channels)
@@ -100,7 +141,7 @@ def features_for(item: tuple[str, bytes]) -> dict:
     clip_id, audio_bytes = item
     x, sr = decode(audio_bytes)
     assert sr == SR
-    return {"id": clip_id, **acoustic_features(x)}
+    return {"id": clip_id, **acoustic_features(x), **vad_features(x)}
 
 
 @torch.no_grad()
@@ -109,12 +150,13 @@ def attention(models: dict, clips: list[bytes], feature_extractor) -> list[dict]
     rows = []
     for audio_bytes in clips:
         x, _ = decode(audio_bytes)
-        cropped = prepare_clip(x)
-        window = pad_window(cropped)
-        feats = feature_extractor(window, sampling_rate=SR, return_tensors="pt").input_features.cuda()
-        n_pad = int((len(window) - len(cropped)) / SR * 50)  # 50 encoder positions per second
         row = {}
         for name, model in models.items():
+            c = model.config
+            cropped = prepare_clip(x, window_s=c.window_s, narrowband=c.narrowband, loudness_dbfs=c.loudness_dbfs)
+            window = pad_window(cropped, c.window_s)
+            feats = feature_extractor(window, sampling_rate=SR, return_tensors="pt").input_features.cuda()
+            n_pad = int((len(window) - len(cropped)) / SR * 50)  # 50 encoder positions per second
             captured = {}
             hook = model.pool.score.register_forward_hook(lambda m, i, o: captured.__setitem__("s", o))
             model(input_features=feats)
@@ -139,13 +181,15 @@ def main() -> None:
     ttd_meta = ttd_ds.select_columns(["id", "data_source", "meta"]).to_pandas()
     ttd = ttd_meta.rename(columns={"data_source": "source"}).assign(group=lambda d: d.source)
 
-    preds = {}
-    for name, path in MODELS.items():
-        for ds_name in ("smart-turn", "ttd"):
-            p = pd.read_parquet(path / f"predictions_{ds_name}.parquet")[["id", "label", "prob"]]
-            preds.setdefault(ds_name, []).append(p.rename(columns={"prob": f"prob_{name}"}))
-    st = st.merge(preds["smart-turn"][0], on="id").merge(preds["smart-turn"][1].drop(columns="label"), on="id")
-    ttd = ttd.merge(preds["ttd"][0], on="id").merge(preds["ttd"][1].drop(columns="label"), on="id")
+    # Predictions on the whole test split (run_eval.py, run_eval_baseline.py), joined by id
+    files = {name: RESULTS_DIR / "eval" / run / "best" / "predictions.parquet" for name, run in MODELS.items()}
+    preds = pd.read_parquet(files["ttd"], columns=["id", "label"])
+    for name, f in {**files, "smart_turn_v32": BASELINE}.items():
+        preds = preds.merge(
+            pd.read_parquet(f, columns=["id", "prob"]).rename(columns={"prob": f"prob_{name}"}), on="id"
+        )
+    st = st.merge(preds, on="id")
+    ttd = ttd.merge(preds, on="id")
 
     # Samples: 20 showcase clips per dataset (TTD: 10 per source), BIG_N per group for statistics
     show = pd.concat(
@@ -184,8 +228,8 @@ def main() -> None:
     # Attention of both models
     from transformers import WhisperFeatureExtractor
 
-    models = {name: EoTModel.from_pretrained(path).cuda().eval() for name, path in MODELS.items()}
-    fe = WhisperFeatureExtractor.from_pretrained(MODELS["ttd"])
+    models = {name: EoTModel.from_pretrained(RUNS / run / "best").cuda().eval() for name, run in MODELS.items()}
+    fe = WhisperFeatureExtractor.from_pretrained(RUNS / MODELS["ttd"] / "best")  # all three are 8 s
     attn = pd.DataFrame(attention(models, [audio[i] for i in sample.id], fe))
     sample = pd.concat([sample.reset_index(drop=True), attn], axis=1)
     layer_weights = {name: torch.softmax(m.layer_weights, 0).tolist() for name, m in models.items()}
@@ -204,7 +248,7 @@ def main() -> None:
 
     proc = WhisperProcessor.from_pretrained("openai/whisper-tiny")
     asr = WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny").cuda().eval()
-    todo = sample.index[(sample.group == "smart-turn") & sample.showcase]
+    todo = sample.index[sample.group == "smart-turn"]  # every sampled smart-turn clip (showcase + statistics)
     for i in todo:
         x, _ = decode(audio[sample.id[i]])
         inputs = proc(x[-30 * SR :], sampling_rate=SR, return_tensors="pt").input_features.cuda()
@@ -227,11 +271,12 @@ def main() -> None:
         for ax, (_, r) in zip(np.atleast_1d(axes), g.iterrows()):
             x, _ = decode(audio[r.id])
             seg = x[-3 * SR :]
-            S = librosa.amplitude_to_db(np.abs(librosa.stft(seg, n_fft=512, hop_length=128)), ref=np.max)
+            magnitude = np.abs(stft(seg, fs=SR, nperseg=512, noverlap=512 - 128)[2])  # (257, frames)
+            S = 20 * np.log10(np.maximum(magnitude, 1e-10) / magnitude.max())  # dB re the loudest bin
             ax.imshow(S, origin="lower", aspect="auto", vmin=-70, vmax=0, extent=[-len(seg) / SR, 0, 0, 8])
             ax.set_ylabel("kHz")
             lab = "complete" if r.label == 1 else "incomplete"
-            title = f"{r.source} | {lab} | P_ttd {r.prob_ttd:.2f} P_st {r.prob_st:.2f}"
+            title = f"{r.source} | {lab} | P_ttd {r.prob_ttd:.2f} P_st {r.prob_st:.2f} P_both {r.prob_both:.2f}"
             ax.set_title(f"{title} | trail {r.trailing_silence_s:.2f}s", fontsize=8)
             ax.tick_params(labelsize=6)
         fig.tight_layout()
