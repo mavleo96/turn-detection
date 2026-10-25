@@ -108,21 +108,23 @@ python scripts/benchmark.py --model both-8s --url http://127.0.0.1:8000
 Closed loop: 1, 2, 4, then 10 workers, each sending its next request as soon as the last returns, 100 times.
 With one worker latency is the server's own; with many the server is saturated, so throughput is its capacity
 and latency includes queueing behind the other workers. `--model` names the run (the server can't tell which
-checkpoint is mounted); the rest of the name and the settings in the files come from `/health`. `results.md` starts with the setup
-(server CPU and settings, model, client, requests) and notes on reading the numbers. `--out` changes
-the base directory (default `results/benchmark/`); a rerun with the same name and settings overwrites.
+checkpoint is mounted); the rest of the name and the settings in the files come from `/health`. `results.md`
+starts with the setup (server CPU and settings, model, client, requests) and notes on reading the numbers. `--out`
+changes the base directory (default `results/benchmark/`); a rerun with the same name and settings overwrites.
 
 Per step: OK / 503 / errors, req/s, p50/p90/p95/p99/max latency, the server's own time (`Server-Timing`:
 client minus server is the network and client overhead) and the mean batch size.
 
 ## Performance and tuning
 
-The forward pass (the Whisper Tiny encoder over 8 s) is nearly all of the work; preprocessing is ~1.5 ms
-natively, ~4–6 ms in Docker. On CPU a batch of B costs about B times one clip, so big batches add latency
-without adding throughput; parallel workers and threads add throughput until the cores run out.
+The forward pass (the Whisper Tiny encoder over the model's window, 8 s for both-8s) is nearly all of the work;
+preprocessing is ~1.5 ms natively, ~4–6 ms in Docker. On CPU a batch of B costs about B times one clip, so big batches
+add latency without adding throughput; parallel workers and threads add throughput until the cores run out.
 
-Measured in Docker on a 2-vCPU x86 Linux VM (AMD EPYC, AVX2 only), ONNX Runtime fp32, both-8s, 6 s WAV
-requests, 50 calls per worker (the benchmark client shares the 2 cores):
+The tracked, reproducible result is `results/benchmark/both-8s-t2-w1-b4/` (current `benchmark.py`, 100 calls per
+worker, 2 threads x 1 worker, batch 4, 2 cores): one caller 20.5 req/s, p50 46 ms, p95 67 ms; 10 workers 23.3 req/s.
+Earlier, in Docker on the same kind of 2-vCPU x86 Linux VM (AMD EPYC, AVX2 only), ONNX Runtime fp32, both-8s, 6 s WAV
+requests, 50 calls per worker (the benchmark client shares the 2 cores), across settings:
 
 | `THREADS` x `WORKERS`, `MAX_BATCH` | 1 worker: req/s, p50, p95 | 10 workers: req/s, p50, p95 |
 |---|---|---|
