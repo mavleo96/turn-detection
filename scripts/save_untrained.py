@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 from transformers import WhisperFeatureExtractor
 
-from turn_detection.data.constants import RUNS_DIR, WINDOW_S
+from turn_detection.data import RUNS_DIR
 from turn_detection.model import EoTModel
 
 
@@ -24,7 +24,7 @@ def main() -> None:
 
     torch.manual_seed(args.seed)
     model = EoTModel.from_whisper(args.whisper)
-    feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=WINDOW_S)
+    feature_extractor = WhisperFeatureExtractor.from_pretrained(args.whisper, chunk_length=model.config.window_s)
 
     model.save_pretrained(args.out)
     feature_extractor.save_pretrained(args.out)

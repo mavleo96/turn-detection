@@ -3,16 +3,27 @@
 Context for working on the inference API. User-facing docs are in `README.md`; this is what isn't obvious
 from the code or the README.
 
-## Goal and status (2026-10-24)
+## Goal and status (2026-10-25)
 
 - Goal: dockerized FastAPI endpoint, p95 < 100 ms, stress-tested under concurrent calls.
 - Done: workers + small batches + `MAX_QUEUE` 503 shedding, warm-up, `Server-Timing`, uvloop/httptools,
-  `scripts/benchmark.py` (`--workers N --calls M`, or `--rps`), `serve/tests` (15, pass in <1 s).
-- Open: the Dockerfile has no tuned `TORCH_THREADS`/`WORKERS` defaults (deliberately: tune on the target
-  machine); never benchmarked on x86 Linux; no trained model yet (only `artifacts/models/untrained`,
-  from `python scripts/save_untrained.py`).
+  `scripts/benchmark.py` (`--workers N --calls M`, or `--rps`), `serve/tests` (16, pass in <1 s).
+- Main's refactor merged (2026-10-25): windows of 2 / 4 / 8 s (`config.window_s`, read per checkpoint);
+  serve decodes with soundfile itself (main removed `audio.decode`: decoding is the caller's; training uses
+  torchcodec, kept out of the image).
+- Trained checkpoints exist (runs `both-{2,4,8}s`, `ttd-8s`, `smart-turn-8s` of 2026-10-24; test metrics in
+  `results/eval/`), stored as W&B model artifacts `<run>-best`, not in git.
+- Open: ONNX Runtime serving (export script, fp32 first, int8 after an accuracy check); no tuned
+  `TORCH_THREADS`/`WORKERS` defaults in the Dockerfile (tune on the target machine).
 
-## Environment gotchas (the user's M3 Mac)
+## Environment gotchas
+
+- On the 2-vCPU Linux box (AVX2 only, no GPU): the env is the repo's `.venv` (CPU torch and torchcodec, both from
+  the PyTorch CPU index: PyPI's torchcodec is a CUDA build), FFmpeg from apt. Docker runs natively (no VM).
+  Measured there in Docker (untrained 8 s model): ~52 ms batch 1, ceiling ~20 req/s (2 threads x 1 worker)
+  to ~24 req/s (1 thread x 2 workers, batch 1).
+
+The user's M3 Mac:
 
 - **Port 8000 is taken by Cursor** on 127.0.0.1/::1 (a port forward). Docker `-p 8000:8000` still binds,
   but requests to 127.0.0.1:8000 reach Cursor ("Server disconnected without sending a response"). Map the
@@ -66,5 +77,5 @@ from the code or the README.
 
 - Commit messages: a subject line followed directly by `- ` bullets (no blank line), then the Co-Authored-By
   trailer. Work on branch `serve`; push only when asked.
-- `.gitignore` ignores only the root `/tests/` (kept local by the user); `serve/tests/` is tracked.
+- Both `tests/` (root) and `serve/tests/` are tracked; main's `.gitignore` ignores `serve/`, this branch doesn't.
 - Comments and docstrings are dense, explain why, and match the existing style in `src/turn_detection`.

@@ -14,6 +14,7 @@ spent in the server.
 """
 
 import asyncio
+import io
 import time
 from contextlib import asynccontextmanager
 
@@ -21,8 +22,6 @@ import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel
-
-from turn_detection.data.audio import decode
 
 from .batcher import MicroBatcher, QueueFull
 from .inference import EoTInference
@@ -42,10 +41,14 @@ def read_audio(body: bytes, content_type: str, sample_rate: int) -> tuple[np.nda
         raise HTTPException(400, "empty request body")
 
     if content_type.startswith("audio/"):
+        # Note: soundfile, not training's torchcodec (FFmpeg, which needs torch in the image); for 16 kHz mono
+        # (all training clips) both give the same samples, and the 3 dB a stereo mean differs by from
+        # torchcodec's (L + R) / sqrt 2 is removed by loudness normalization
         try:
-            x, sample_rate = decode(body)
+            x, sample_rate = sf.read(io.BytesIO(body), dtype="float32", always_2d=True)  # (T, channels)
         except (sf.LibsndfileError, RuntimeError) as error:
             raise HTTPException(400, f"could not decode audio: {error}") from error
+        x = x.mean(axis=1)  # (T,)
     elif content_type == "application/octet-stream":
         if len(body) % 4:
             raise HTTPException(400, "raw audio must be float32 samples (a multiple of 4 bytes)")

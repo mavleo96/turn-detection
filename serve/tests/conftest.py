@@ -7,17 +7,21 @@ import pytest
 import soundfile as sf
 from transformers import WhisperConfig, WhisperFeatureExtractor
 
-from turn_detection.data.constants import SAMPLE_RATE, WINDOW_S
+from turn_detection.data import SAMPLE_RATE
 from turn_detection.model import EoTConfig, EoTModel
+
+
+def save_tiny_model(path, window_s: int):
+    encoder = WhisperConfig(d_model=16, encoder_layers=2, encoder_attention_heads=2, encoder_ffn_dim=32)
+    config = EoTConfig(encoder_config=encoder.to_dict(), window_s=window_s, head_hidden=8, threshold=0.5)
+    EoTModel(config).save_pretrained(path)
+    WhisperFeatureExtractor(chunk_length=window_s).save_pretrained(path)
 
 
 @pytest.fixture(scope="session")
 def model_dir(tmp_path_factory):
-    encoder = WhisperConfig(d_model=16, encoder_layers=2, encoder_attention_heads=2, encoder_ffn_dim=32)
-    config = EoTConfig(encoder=encoder.to_dict(), head_hidden=8, threshold=0.5)
     path = tmp_path_factory.mktemp("model")
-    EoTModel(config).save_pretrained(path)
-    WhisperFeatureExtractor(chunk_length=WINDOW_S).save_pretrained(path)
+    save_tiny_model(path, window_s=8)
     return path
 
 

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from serve.app import create_app
 
-from .conftest import wav_bytes
+from .conftest import save_tiny_model, wav_bytes
 
 
 @pytest.fixture
@@ -44,6 +44,16 @@ def test_predict_raw_float32_at_8k(client):
 )
 def test_bad_input(client, body, content_type, status):
     assert client.post("/predict", content=body, headers={"Content-Type": content_type}).status_code == status
+
+
+def test_window_follows_model_config(tmp_path):
+    from serve.inference import EoTInference
+
+    save_tiny_model(tmp_path, window_s=4)
+    inference = EoTInference(tmp_path)
+    features = inference.features(np.zeros(16000 * 6, dtype=np.float32), 16000)
+    assert features.shape == (80, 400)
+    assert inference.probabilities(features[None]).shape == (1,)
 
 
 def test_too_long(client):

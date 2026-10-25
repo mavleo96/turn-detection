@@ -14,9 +14,11 @@ load: a few workers run small batches in parallel, and when too many requests ar
 | `tests/` | API and batcher tests with a tiny random model (no network) |
 
 Preprocessing is `turn_detection.data.audio`, the same code as training (minus augmentation): resample to
-16 kHz, last 8 s, 8 kHz round trip if the model was trained with it (`config.narrowband`), loudness
-normalized to the model's RMS level (`config.loudness_dbfs`, -30 dBFS), zero-padded on the left to 8 s,
-then the model's own `WhisperFeatureExtractor`.
+16 kHz, the last `config.window_s` seconds (2, 4 or 8, as the model was trained), 8 kHz round trip if the
+model was trained with it (`config.narrowband`), loudness normalized to the model's RMS level
+(`config.loudness_dbfs`, -30 dBFS), zero-padded on the left to the window, then the model's own
+`WhisperFeatureExtractor`. Audio files are decoded with soundfile, not training's torchcodec (which would put
+torch and FFmpeg in the image); for 16 kHz mono both give the same samples.
 
 ## Run locally
 
@@ -41,12 +43,12 @@ python -m serve --model artifacts/models/untrained     # http://127.0.0.1:8000, 
 
 ## API
 
-`POST /predict`: the request body is the audio, ending at the pause to classify (only the last 8 s are
-used; at most 60 s accepted).
+`POST /predict`: the request body is the audio, ending at the pause to classify (only the model's last
+`window_s` seconds are used; at most 60 s accepted).
 
 | Content-Type | Body |
 |---|---|
-| `audio/wav`, `audio/flac`, ... | an audio file at any sample rate; stereo is mixed down |
+| `audio/wav`, `audio/flac`, ... | an audio file soundfile can read, at any sample rate; stereo is mixed down (channel mean) |
 | `application/octet-stream` | raw little-endian float32 mono samples; rate from `?sample_rate=` (default 16000) |
 
 ```bash
