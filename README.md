@@ -23,9 +23,9 @@ encoder, 5 epochs, threshold chosen on validation. Full tables: `results/eval/`.
   0.101 (complete turns missed: the agent waits).
 - **As a system on TTD** (`results/eval/system/`): the model decides 0.224 s after speech; if it says incomplete, a
   fallback timeout T ends the turn unless the user speaks again first. The fallback catches missed turns but adds
-  interruptions: with T = 1.5 s, FPR 0.356, FNR 0.021, mean response delay 0.34 s (91% of the completed turns it ends
-  are ended by the model at 0.224 s); a timeout alone at T = 0.75 s interrupts as often (FPR 0.311, FNR 0.029) and
-  always answers after 0.75 s. Delays exclude inference time.
+  interruptions: with T = 2.0 s, FPR 0.334, FNR 0.027, mean response delay 0.37 s (92% of the completed turns it ends
+  are ended by the model at 0.224 s); a timeout alone at T = 0.75 s interrupts slightly less often (FPR 0.311, FNR
+  0.029) but always answers after 0.75 s. Delays exclude inference time.
 - **Against Smart Turn at the same interruption rate** (its TTD FPR, 0.229; our threshold 0.546, chosen on TTD
   validation): we miss 17.5% of completed turns, Smart Turn 42%.
 - **Smart Turn v3.2** was trained on all of smart-turn (its smart-turn number is in-domain) and never on TTD, whose
