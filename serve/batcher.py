@@ -6,7 +6,7 @@ one, runs the batch in a worker thread (so the event loop keeps accepting reques
 future. Requests that arrive while the workers are busy queue up and form the next batches.
 
 On CPU a forward pass costs about the same per clip at any batch size, so batching saves little; running a
-few small batches at once (torch releases the GIL) is what adds throughput. When more than `max_queue`
+few small batches at once (ONNX Runtime releases the GIL) is what adds throughput. When more than `max_queue`
 requests are already waiting, `submit` raises QueueFull at once instead of queueing a request that could
 only finish late (the API answers 503).
 """

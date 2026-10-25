@@ -16,7 +16,7 @@ phone calls + Seamless Interaction).
 | `src/turn_detection/data/` | Constants, paths and the preprocessing defaults (`__init__.py`); per-clip audio steps shared with serving: last-`window_s` crop, 8 kHz round trip, loudness normalization, padding (`audio.py`); the splits (`load_split`), `EoTDataset`, `EoTCollator` (`dataset.py`); augmentation with torch-audiomentations (`transforms.py`) |
 | `src/turn_detection/model/` | The model only: `EoTConfig` (`config.py`), attention pooling (`modules.py`), `EoTModel`, a transformers `PreTrainedModel` with the encoder setup and layer weights (`model.py`) |
 | `src/turn_detection/train/` | HF `Trainer` setup (`trainer.py`), metrics with scikit-learn (`metrics.py`); `python -m turn_detection.train` |
-| `scripts/` | One-off runs: `explore_dataset.py`, `samples.py`, `run_eval.py`, `run_eval_baseline.py`; `benchmark.py` (load test for the running inference API) |
+| `scripts/` | One-off runs: `explore_dataset.py`, `samples.py`, `run_eval.py`, `run_eval_baseline.py`; `export_onnx.py` (a checkpoint -> `model.onnx` for `serve/`), `benchmark.py` (load test for the running inference API) |
 | [`serve/`](serve/README.md) | Inference API (FastAPI, dynamic micro-batching) and its CPU Dockerfile |
 | `tests/` | Tests for all of the above (CPU only, no network: tiny in-memory datasets stand in for the Hub) |
 | `results/` | Analyses: `data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`), `ttd_vs_smart_turn/` (`FINDINGS.md`), and test evaluations (`eval/<run>/<checkpoint>/`, `run_eval.py`), tracked; listening samples (`samples/`), gitignored |
@@ -57,6 +57,7 @@ python -m turn_detection.train --datasets ttd        # one dataset
 python -m turn_detection.train --window_s 2          # a 2 s window (one run per window)
 python scripts/run_eval.py artifacts/runs/<run>/best     # -> results/eval/<run>/best/
 python scripts/run_eval_baseline.py                  # Pipecat's Smart Turn v3.2 -> results/eval/smart-turn-v3.2-gpu/
+python scripts/export_onnx.py artifacts/runs/<run>/best  # -> best/model.onnx (fp32, checked vs torch), for serve/
 python scripts/benchmark.py --url http://127.0.0.1:8000 --workers 1,10 --calls 100   # the API (serve/), running
 ```
 
@@ -118,6 +119,9 @@ persistent volume on this instance: after a recycle the first step downloads it 
   same test split with its own preprocessing (last 8 s, left zero-padding, `do_normalize=True`, full band) and
   threshold 0.5, written like `run_eval` to `results/eval/<model file>/` (~10 min on CPU). Smart Turn was trained on
   all of smart-turn v3.2 train (so `human_5` and `rime_2` too) and never saw TTD.
+- **export_onnx**: one checkpoint -> `model.onnx` in the same directory: the model plus its sigmoid, fp32, dynamic batch,
+  one file; fails if ONNX Runtime and torch differ by > 1e-4.
+  `serve/` runs it with ONNX Runtime, without torch.
 - **benchmark**: load test for the running inference API (`serve/`, local or its Docker image). Closed loop:
   `--workers 1,10` workers, each making `--calls` back-to-back requests; or open loop: `--rps 5,10,20`
   (Poisson arrivals, latency counted from the scheduled send time). Per step: OK / 503 / errors, req/s,

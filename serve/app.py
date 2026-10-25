@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from .batcher import MicroBatcher, QueueFull
 from .inference import EoTInference
 
-MAX_AUDIO_S = 60  # longer requests are rejected; only the last 8 s are used anyway
+MAX_AUDIO_S = 60  # longer requests are rejected; only the model's last window_s seconds are used anyway
 
 
 class Prediction(BaseModel):
@@ -91,7 +91,7 @@ def create_app(
         mean_batch = batcher.requests / batcher.batches if batcher.batches else None
         return {
             "status": "ok",
-            "device": inference.device,
+            "threads": inference.threads,
             "threshold": inference.threshold,
             "max_batch": batcher.max_batch,
             "max_wait_ms": batcher.max_wait_s * 1000,

@@ -79,3 +79,10 @@ def test_busy_server_answers_503(inference, monkeypatch):
         r = c.post("/predict", content=wav_bytes(), headers={"Content-Type": "audio/wav"})
         assert r.status_code == 503 and r.headers["retry-after"] == "1"
         assert c.get("/health").json()["rejected"] == 1
+
+
+def test_missing_onnx_names_the_export_script(tmp_path):
+    from serve.inference import EoTInference
+
+    with pytest.raises(FileNotFoundError, match="export_onnx.py"):
+        EoTInference(tmp_path)

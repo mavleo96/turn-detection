@@ -2,16 +2,17 @@
 
 FastAPI server for the EoT model: audio in, P(turn complete) out. Built for low latency under concurrent
 load: a few workers run small batches in parallel, and when too many requests are waiting the server answers
-503 at once instead of late. CPU by default; the Docker image is CPU-only.
+503 at once instead of late. The model runs in ONNX Runtime on CPU (fp32, exported by `scripts/export_onnx.py`),
+so neither the server nor its image needs torch.
 
 | File | What it does |
 |---|---|
-| `inference.py` | `EoTInference`: loads a model directory (`save_pretrained` output: `<run>/best`), per-request preprocessing + features, batched forward pass, warm-up |
+| `inference.py` | `EoTInference`: loads a checkpoint directory (`<run>/best` with `model.onnx`), per-request preprocessing + features, batched forward pass in ONNX Runtime, warm-up |
 | `batcher.py` | `MicroBatcher`: queues requests; each of `workers` takes up to `max_batch` of them, waiting at most `max_wait_ms` after the first; rejects beyond `max_queue` |
 | `app.py` | FastAPI app: `POST /predict`, `GET /health` |
 | `__main__.py` | `python -m serve` (flags or environment variables) |
-| `Dockerfile` | CPU image (`python:3.12-slim` + CPU torch) |
-| `tests/` | API and batcher tests with a tiny random model (no network) |
+| `Dockerfile` | CPU image (`python:3.12-slim` + ONNX Runtime, no torch) |
+| `tests/` | API and batcher tests with a tiny random model, exported to ONNX (no network) |
 
 Preprocessing is `turn_detection.data.audio`, the same code as training (minus augmentation): resample to
 16 kHz, the last `config.window_s` seconds (2, 4 or 8, as the model was trained), 8 kHz round trip if the
@@ -22,24 +23,29 @@ torch and FFmpeg in the image); for 16 kHz mono both give the same samples.
 
 ## Run locally
 
-From the repo root, in the conda env `turn` (the package is already installed there with `pip install -e`):
+From the repo root, in the training env (the package installed with `pip install -e`; the export needs torch):
 
 ```bash
 # a trained checkpoint (W&B model artifact <run>-best), e.g. both-8s
 wandb artifact get mavleo96-team/turn-detection/both-8s-5ep-20261024-225310-best:best --root artifacts/models/both-8s
+python scripts/export_onnx.py artifacts/models/both-8s   # -> artifacts/models/both-8s/model.onnx, checked vs torch
 python -m serve --model artifacts/models/both-8s       # http://127.0.0.1:8000, docs at /docs
 ```
 
+The export writes the model plus its sigmoid as one fp32 `model.onnx`, with a dynamic batch
+dimension, and fails if ONNX Runtime and torch disagree by more than 1e-4. The
+server reads everything else from the same directory: `config.json` (threshold, window, preprocessing) and the
+feature extractor.
+
 | Flag | Env var | Default | |
 |---|---|---|---|
-| `--model` | `MODEL_DIR` | (required) | a `save_pretrained` directory: model + feature extractor |
-| `--host`, `--port` | `HOST`, `PORT` | `127.0.0.1`, `8000` | the demo backend also defaults to 8000: pick another port to run both |
-| `--device` | `DEVICE` | `cpu` | `cuda` works too |
-| `--workers` | `WORKERS` | 1 | forward passes run in parallel (torch releases the GIL) |
+| `--model` | `MODEL_DIR` | (required) | a checkpoint directory with `model.onnx`, `config.json` and the feature extractor |
+| `--host`, `--port` | `HOST`, `PORT` | `127.0.0.1`, `8000` | |
+| `--workers` | `WORKERS` | 1 | forward passes run in parallel (ONNX Runtime releases the GIL) |
 | `--max-batch` | `MAX_BATCH` | 4 | largest batch per forward pass |
 | `--max-wait-ms` | `MAX_WAIT_MS` | 2 | longest a request waits for others to join its batch |
 | `--max-queue` | `MAX_QUEUE` | 0 (no limit) | requests allowed to wait for a worker; beyond that, 503 |
-| `--threads` | `TORCH_THREADS` | torch's default | intra-op threads per forward pass |
+| `--threads` | `THREADS` | 0: one per core | ONNX Runtime's intra-op threads per forward pass |
 | `--access-log` | `ACCESS_LOG` | off | uvicorn's per-request log line |
 
 ## API
@@ -62,7 +68,7 @@ response carries `Server-Timing: total;dur=<ms>`, the time spent in the server. 
 undecodable, too long, NaN samples), 415 (other content types), 422 (bad `sample_rate`), 503 with
 `Retry-After: 1` (more than `max_queue` requests waiting).
 
-`GET /health`: status, device, threshold, the batching settings, and counters: `requests`, `batches`,
+`GET /health`: status, threads, threshold, the batching settings, and counters: `requests`, `batches`,
 `mean_batch_size`, `queued` (waiting now) and `rejected` (503s so far).
 
 ## Docker
@@ -75,10 +81,14 @@ docker build -f serve/Dockerfile -t eot-serve .
 docker run --rm -p 8000:8000 -v "$PWD/artifacts/models/both-8s:/model:ro" eot-serve
 ```
 
-The image installs the CPU torch wheel, the pinned `serve/requirements.txt` (with uvloop and httptools for
-uvicorn), and the `turn_detection` package core only (`pip install --no-deps .`: no datasets, augmentation
-or wandb). It runs as a non-root user with a `HEALTHCHECK` on `/health`. Settings go in as environment
-variables (`-e WORKERS=2 -e TORCH_THREADS=4`).
+Export the checkpoint first (`model.onnx` in the mounted directory), and make its files readable by the image's
+user (uid 1000): `chmod a+r artifacts/models/both-8s/*`. The image (~670 MB) installs the pinned
+`serve/requirements.txt` (ONNX Runtime, with uvloop and httptools for uvicorn) and the `turn_detection` package
+without dependencies (`pip install --no-deps .`: serve imports only `turn_detection.data`, numpy and soxr; no
+torch, datasets, augmentation or wandb). It sets `OPENBLAS_NUM_THREADS=1`: numpy's OpenBLAS threads otherwise
+busy-wait after the feature extractor's matmul and take the cores ONNX Runtime needs (87 ms instead of 42 ms per
+request with 2 threads on 2 cores). It runs as a non-root user with a `HEALTHCHECK` on `/health`. Settings go
+in as environment variables (`-e WORKERS=2 -e THREADS=1`).
 
 The image is built for the machine that builds it: on an Apple Silicon Mac that is `linux/arm64`. For an
 x86 server, build on the server, or cross-build with
@@ -107,9 +117,24 @@ client minus server is the network and client overhead) and the mean batch size.
 ## Performance and tuning
 
 The forward pass (the Whisper Tiny encoder over 8 s) is nearly all of the work; preprocessing is ~1.5 ms
-natively, ~4 ms in Docker. On CPU a batch of B costs about B times one clip, so big batches add latency
-without adding throughput; parallel workers and threads add throughput until the cores run out. Measured
-on an M3 MacBook (8 cores), untrained stand-in model, 6 s WAV requests:
+natively, ~4–6 ms in Docker. On CPU a batch of B costs about B times one clip, so big batches add latency
+without adding throughput; parallel workers and threads add throughput until the cores run out.
+
+Measured in Docker on a 2-vCPU x86 Linux VM (AMD EPYC, AVX2 only), ONNX Runtime fp32, both-8s, 6 s WAV
+requests, 50 calls per worker (the benchmark client shares the 2 cores):
+
+| `THREADS` x `WORKERS`, `MAX_BATCH` | 1 worker: req/s, p50, p95 | 10 workers: req/s, p50, p95 |
+|---|---|---|
+| 2 x 1, 1 | 22.1, 43 ms, 53 ms | 22.4, 443 ms, 484 ms |
+| 2 x 1, 4 | 19.7, 48 ms, 66 ms | 23.9, 376 ms, 527 ms |
+| 1 x 2, 1 | 14.4, 69 ms, 75 ms | 26.7, 370 ms, 405 ms |
+| 1 x 2, 4 | 14.1, 71 ms, 75 ms | 27.1, 370 ms, 453 ms |
+
+On the same VM the torch image (untrained model, same compute) did 2 x 1: 19.1 req/s at p95 76 ms for one
+caller, and at most 23.6 req/s (1 x 2, batch 1); without `OPENBLAS_NUM_THREADS=1`, which may have slowed it too.
+Two threads per pass give the lowest latency for one caller; one thread per worker the most throughput.
+
+Earlier, torch on an M3 MacBook (8 cores), untrained stand-in model:
 
 | Where | Forward, batch 1 | Most req/s | 1 worker x 100 calls | 10 workers x 100 calls |
 |---|---|---|---|---|
@@ -119,16 +144,18 @@ on an M3 MacBook (8 cores), untrained stand-in model, 6 s WAV requests:
 Docker Desktop on a Mac is a poor stand-in for a server: its Linux VM can't use Accelerate's matrix units
 and effectively gets about 3 cores. One caller at a time is well under 100 ms; 10 back-to-back callers
 need ~10x the throughput. Tried and not worth it there: bf16/fp16 (slower on this CPU), oneDNN bf16 fast
-math (slower), ONNX Runtime fp32 (no faster), `torch.compile` (~1 ms). int8 quantization would cut the
-compute but changes the outputs, so it needs checking against a trained model first.
+math (slower), ONNX Runtime fp32 (no faster on the Mac; ~15% faster than torch on x86 Linux), `torch.compile`
+(~1 ms). int8 (ONNX Runtime dynamic quantization: ~1.5x faster than fp32 on the Linux VM) changes the outputs
+and is not used.
 
 Tune on the machine you deploy to: start one container, run `scripts/benchmark.py --workers 1,5,10`, and try
-`TORCH_THREADS` (forward speed; more threads helped up to 4 in the Docker VM), `WORKERS` (parallel passes;
-total threads `WORKERS x TORCH_THREADS` should not exceed the cores), and `OMP_WAIT_POLICY=PASSIVE` (less
-spinning when the CPU is shared). Set `MAX_QUEUE` to keep accepted requests fast once the server is at
+`THREADS` (forward speed) and `WORKERS` (parallel passes; total threads `WORKERS x THREADS` should not exceed
+the cores). Set `MAX_QUEUE` to keep accepted requests fast once the server is at
 capacity (callers retry or fall back on 503); scale out with more containers behind a load balancer.
 
 ## Tests
+
+In the training env (the fixtures export a tiny model with `scripts/export_onnx.py`, which needs torch):
 
 ```bash
 pytest serve/tests      # or `pytest` from the repo root, which runs these too

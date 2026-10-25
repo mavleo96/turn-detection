@@ -32,8 +32,11 @@ matplotlib==3.11.2
 # Threshold selection (precision-recall curve)
 scikit-learn==1.9.1
 
-# Baseline: Pipecat's Smart Turn v3 ONNX model (scripts/run_eval_baseline.py)
+# Baseline: Pipecat's Smart Turn v3 ONNX model (scripts/run_eval_baseline.py); our checkpoints for serve/
+# (scripts/export_onnx.py: the dynamo exporter needs onnx and onnxscript)
 onnxruntime==1.31.0
+onnx==1.23.2
+onnxscript==0.7.2
 
 # Tests; the API benchmark client (scripts/benchmark.py)
 pytest==9.1.1

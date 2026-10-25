@@ -7,21 +7,29 @@ from the code or the README.
 
 - Goal: dockerized FastAPI endpoint, p95 < 100 ms, stress-tested under concurrent calls.
 - Done: workers + small batches + `MAX_QUEUE` 503 shedding, warm-up, `Server-Timing`, uvloop/httptools,
-  `scripts/benchmark.py` (`--workers N --calls M`, or `--rps`), `serve/tests` (16, pass in <1 s).
+  `scripts/benchmark.py` (`--workers N --calls M`, or `--rps`), `serve/tests` (17, ~4 s; the fixtures export a tiny model, so
+  they run in the training env, not with serve/requirements.txt alone).
 - Main's refactor merged (2026-10-25): windows of 2 / 4 / 8 s (`config.window_s`, read per checkpoint);
   serve decodes with soundfile itself (main removed `audio.decode`: decoding is the caller's; training uses
   torchcodec, kept out of the image).
 - Trained checkpoints exist (runs `both-{2,4,8}s`, `ttd-8s`, `smart-turn-8s` of 2026-10-24; test metrics in
   `results/eval/`), stored as W&B model artifacts `<run>-best`, not in git.
-- Open: ONNX Runtime serving (export script, fp32 first, int8 after an accuracy check); no tuned
-  `TORCH_THREADS`/`WORKERS` defaults in the Dockerfile (tune on the target machine).
+- ONNX Runtime only (2026-10-25): `scripts/export_onnx.py` writes `model.onnx` (fp32, sigmoid included) into
+  the checkpoint dir; the server reads `config.json` as JSON (importing `turn_detection.model` imports torch);
+  the image has no torch (~670 MB, was 1.74 GB). The user chose fp32 only: no int8, no fp16.
+- Open: no tuned `THREADS`/`WORKERS` defaults in the Dockerfile (tune on the target machine).
 
 ## Environment gotchas
 
 - On the 2-vCPU Linux box (AVX2 only, no GPU): the env is the repo's `.venv` (CPU torch and torchcodec, both from
   the PyTorch CPU index: PyPI's torchcodec is a CUDA build), FFmpeg from apt. Docker runs natively (no VM).
-  Measured there in Docker (untrained 8 s model): ~52 ms batch 1, ceiling ~20 req/s (2 threads x 1 worker)
-  to ~24 req/s (1 thread x 2 workers, batch 1).
+  Measured there in Docker, both-8s: torch ~52 ms batch 1, ceiling ~24 req/s; ONNX Runtime fp32 ~42 ms
+  (2 threads), ceiling ~27 req/s (1 thread x 2 workers). Table in README.
+- `OPENBLAS_NUM_THREADS=1` matters (set in the Dockerfile): numpy's OpenBLAS threads busy-wait after the
+  feature extractor's matmul and starved ONNX Runtime (2 threads: 87 ms -> 42 ms per request). ORT's own
+  spinning (`session.intra_op.allow_spinning`) made no difference once that was set.
+- Export gotchas: `torch.onnx.export(..., external_data=False)` for one file (the default writes `.data`);
+  int8 `quantize_dynamic` (not used) also needed `graph.value_info` cleared (stale shapes).
 
 The user's M3 Mac:
 
@@ -34,9 +42,10 @@ The user's M3 Mac:
   imports `serve.*` needs `PYTHONPATH=.`. Don't name scratch scripts `profile.py` (shadows the stdlib
   module that torch imports).
 - The conda env `turn` has the package installed editable (`pip install --no-deps -e .`) plus fastapi,
-  uvicorn, uvloop, httptools, onnxruntime/onnx/onnxscript (installed while experimenting; not required).
+  uvicorn, uvloop, httptools; onnxruntime/onnx/onnxscript are now needed (pinned in requirements.txt) for
+  scripts/export_onnx.py and the serve tests.
 
-## Performance facts (measured; untrained model, 6 s WAV requests)
+## Performance facts (measured with torch, mostly on the M3 Mac; untrained model, 6 s WAV requests)
 
 - Forward pass (Whisper Tiny encoder, 400 positions) is ~all of the cost; ~7 GFLOP per clip, mostly
   `addmm`. Preprocessing ~1.4 ms natively, ~4 ms in Docker.
@@ -53,19 +62,18 @@ The user's M3 Mac:
 - Tried and rejected (don't retry without a new reason):
   - fp16 or bf16 weights on CPU: ~10x slower.
   - oneDNN bf16 fast math (`ONEDNN_DEFAULT_FPMATH_MODE=BF16`): slower, ~1% hidden-state drift.
-  - ONNX Runtime fp32: 3–4x slower on macOS, no faster in Docker. The TorchScript exporter fails;
-    `dynamo=True` works.
+  - ONNX Runtime fp32 on the Mac: 3–4x slower on macOS, no faster in Docker Desktop (on x86 Linux it is
+    ~15% faster than torch, hence serving with it). The TorchScript exporter fails; `dynamo=True` works.
   - `torch.compile`: ~1 ms gain.
   - torch dynamic int8: the API is deprecated and there's no qengine on macOS.
-  - ORT `quantize_dynamic`: fails in shape inference on the dynamo export.
-- int8 is the remaining big compute lever, but it changes outputs: validate with `scripts/run_eval.py` on
-  a trained model before using it.
+  - ORT `quantize_dynamic`: works on x86 once `graph.value_info` is cleared (~1.5x faster than fp32), but
+    the user chose fp32 only.
 
 ## Benchmarking
 
 - Benchmark the container, not the host process. The host numbers are ~3x better and misleading for
   deployment.
-- Pattern: `docker run -d --name eot-bench -p 18000:8000 -e TORCH_THREADS=4 -e OMP_WAIT_POLICY=PASSIVE
+- Pattern: `docker run -d --name eot-bench -p 18000:8000 -e THREADS=2
   -v "$PWD/artifacts/models/both-8s:/model:ro" eot-serve`, wait on `/health`, then
   `python scripts/benchmark.py --url http://127.0.0.1:18000 --workers 1,10 --calls 100`; `docker rm -f` after.
 - The client shares the laptop's CPU with the Docker VM, so heavy steps are pessimistic. Client p50 minus

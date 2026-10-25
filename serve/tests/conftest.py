@@ -1,4 +1,4 @@
-"""A tiny random EoT model saved like a training run's best/ (no network), and an app around it."""
+"""A tiny random EoT model saved like a training run's best/ and exported to ONNX (no network), and an app around it."""
 
 import io
 
@@ -7,15 +7,18 @@ import pytest
 import soundfile as sf
 from transformers import WhisperConfig, WhisperFeatureExtractor
 
+from export_onnx import export
 from turn_detection.data import SAMPLE_RATE
 from turn_detection.model import EoTConfig, EoTModel
 
 
 def save_tiny_model(path, window_s: int):
+    """A tiny random checkpoint in `path`, exported to path/model.onnx."""
     encoder = WhisperConfig(d_model=16, encoder_layers=2, encoder_attention_heads=2, encoder_ffn_dim=32)
     config = EoTConfig(encoder_config=encoder.to_dict(), window_s=window_s, head_hidden=8, threshold=0.5)
     EoTModel(config).save_pretrained(path)
     WhisperFeatureExtractor(chunk_length=window_s).save_pretrained(path)
+    export(path)
 
 
 @pytest.fixture(scope="session")
