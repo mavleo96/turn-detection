@@ -38,6 +38,7 @@ onnxruntime==1.31.0
 onnx==1.23.2
 onnxscript==0.7.2
 
-# Tests; the API benchmark client (scripts/benchmark.py)
+# Tests (serve/tests use FastAPI's TestClient, which needs httpx); the API benchmark client (scripts/benchmark.py)
 pytest==9.1.1
 httpx==0.28.1
+fastapi==0.161.1  # same pin as serve/requirements.txt
