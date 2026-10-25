@@ -27,7 +27,7 @@ from . import (
 from .audio import pad_window, prepare_clip
 from .transforms import apply_augment
 
-COLUMNS = ["id", "audio", "dataset", "label"]
+COLUMNS = ["id", "audio", "dataset", "corpus", "label"]
 LABELS = ClassLabel(names=["incomplete", "complete"])
 # Note: datasets decodes with torchcodec, resampling to 16 kHz and downmixing to mono ((L + R) / sqrt 2)
 AUDIO = Audio(sampling_rate=SAMPLE_RATE, num_channels=1)
@@ -35,8 +35,8 @@ AUDIO = Audio(sampling_rate=SAMPLE_RATE, num_channels=1)
 
 def load_split(split: str, datasets: Sequence[str] = DATASETS, num_proc: int | None = None) -> HFDataset:
     """train / validation / test of `datasets` (smart-turn English, ttd) as id, audio (16 kHz mono), dataset (source),
-    label. smart-turn train without HOLDOUT is split VAL_FRAC at random into validation; test is its whole English
-    test split."""
+    corpus (smart-turn / ttd), label. smart-turn train without HOLDOUT is split VAL_FRAC at random into validation;
+    test is its whole English test split."""
     unknown = set(datasets) - set(DATASETS)
     if unknown or not datasets:
         raise ValueError(f"datasets must be some of {DATASETS}, got {list(datasets)}")
@@ -46,6 +46,8 @@ def load_split(split: str, datasets: Sequence[str] = DATASETS, num_proc: int | N
         holdout = () if split == "test" else HOLDOUT
         repo = SMART_TURN_TEST if split == "test" else SMART_TURN_TRAIN
         smart_turn = load_dataset(repo, split="train", num_proc=num_proc)  # both repos have one split, "train"
+        # Note: add columns before filtering: add_column on a filtered dataset rewrites the whole table (audio too)
+        smart_turn = smart_turn.add_column("corpus", ["smart-turn"] * len(smart_turn))
         smart_turn = smart_turn.filter(
             lambda language, source: language == LANGUAGE and source not in holdout,
             input_columns=["language", "dataset"],
@@ -61,6 +63,7 @@ def load_split(split: str, datasets: Sequence[str] = DATASETS, num_proc: int | N
 
     if "ttd" in datasets:
         ttd = load_dataset(TTD, split=split, num_proc=num_proc)
+        ttd = ttd.add_column("corpus", ["ttd"] * len(ttd))
         ttd = ttd.filter(lambda clip_id: clip_id not in UNDECODABLE, input_columns="id", num_proc=num_proc)
         parts.append(ttd.rename_column("data_source", "dataset"))
 

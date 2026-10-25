@@ -18,7 +18,7 @@ phone calls + Seamless Interaction).
 | `src/turn_detection/train/` | HF `Trainer` setup (`trainer.py`), metrics with scikit-learn (`metrics.py`); `python -m turn_detection.train` |
 | `scripts/` | One-off runs: `explore_dataset.py`, `samples.py`, `run_eval.py` |
 | `tests/` | Tests for all of the above (CPU only, no network: tiny in-memory datasets stand in for the Hub) |
-| `results/` | Analyses: `data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`), `ttd_vs_smart_turn/` (`FINDINGS.md`), both tracked; listening samples (`samples/`, gitignored) |
+| `results/` | Analyses: `data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`), `ttd_vs_smart_turn/` (`FINDINGS.md`), and test evaluations (`eval/<run>/<checkpoint>/`, `run_eval.py`), tracked; listening samples (`samples/`), gitignored |
 | `artifacts/` | Generated, gitignored: training runs |
 
 `pip install -e ".[train]"` installs everything for training, evaluation, scripts and tests; `pip install .` only the
@@ -54,7 +54,7 @@ python scripts/samples.py                            # -> results/samples/ (WAVs
 python -m turn_detection.train                       # smart-turn + TTD, 8 s -> artifacts/runs/<timestamp>/
 python -m turn_detection.train --datasets ttd        # one dataset
 python -m turn_detection.train --window_s 2          # a 2 s window (one run per window)
-python scripts/run_eval.py --model artifacts/runs/<run>/best --benchmark
+python scripts/run_eval.py artifacts/runs/<run>/best     # -> results/eval/<run>/best/
 ```
 
 | Step | Main flags | Disk | Time |
@@ -62,7 +62,7 @@ python scripts/run_eval.py --model artifacts/runs/<run>/best --benchmark
 | `explore_dataset` | `--num-proc 16`, `--no-audio` | ~94 GB HF cache (46 GB parquet + `datasets`' Arrow copy), < 1 MB results | first run download-bound; from the cache a few minutes |
 | `samples` | `--per-bucket 15`, `--seed` | ~50 MB | seconds |
 | `python -m turn_detection.train` | `--datasets smart-turn ttd`, `--window_s`, `--max_train_samples`, `--augment false`, `--gain_db`, `--noise_p`, `--freeze_encoder`, plus every `TrainingArguments` flag (`--learning_rate`, `--num_train_epochs`, `--max_steps`, `--report_to`, ...) | ~200 MB per run (2 checkpoints + best) | ~7 min per epoch on the RTX 3060 for both datasets (~35 min for 5), frozen encoder; data loading is the limit |
-| `run_eval` | `--model`, `--datasets`, `--benchmark` | small | ~2 min |
+| `run_eval` | the checkpoint, `--out`, `--workers`, `--cpu` | ~5 MB | ~1 min on the RTX 4090 |
 
 The data lives in the Hugging Face cache (`HF_HOME`, default `/workspace/.hf_home`). `/workspace` is not a
 persistent volume on this instance: after a recycle the first step downloads it again.
@@ -71,7 +71,7 @@ persistent volume on this instance: after a recycle the first step downloads it 
 
 - **`data.dataset.load_split(split, datasets)`** builds `train`, `validation` or `test` of `smart-turn` and/or `ttd`
   (default both) from the cache (~20 s the first time, then cached by `datasets`) as one table, `id, audio, dataset,
-  label`, with 16 kHz mono audio (`datasets` decodes with torchcodec) and `label` a `ClassLabel(incomplete,
+  corpus, label`, with 16 kHz mono audio (`datasets` decodes with torchcodec) and `label` a `ClassLabel(incomplete,
   complete)`:
   - smart-turn: English only. Its train split without the holdout sources `human_5` and `rime_2` is split 90/10 at
     random (`train_test_split`, seed 42, on the Hub's row order) into train and validation; test is its whole
@@ -107,9 +107,10 @@ persistent volume on this instance: after a recycle the first step downloads it 
   Writes `results/data_exploration/summary.md`, `summary.json`, `tables/*.csv` and plots; the write-up of the split
   findings is `results/data_exploration/EXPLORE.md`.
 - **samples**: 15 random English smart-turn clips per (label × synthetic) bucket, as WAVs at their original rate.
-- **run_eval**: metrics on the test split at 0.5 and at the model's validation threshold (`config.threshold`),
-  overall and by source (`dataset`), predicting through `Trainer.predict`; `--benchmark` times batch-1 inference
-  (preprocessing + features on CPU, the model on `--device` and on CPU).
+- **run_eval**: one of our checkpoints on the whole test split, predicting through `Trainer.predict` with the
+  model's window, preprocessing and validation threshold (`config.threshold`). Writes `results/eval/<run>/<checkpoint>/`:
+  `predictions.parquet` (per clip: id, source, corpus, label, prob, pred), `metrics.csv` and `metrics.md` (n,
+  complete share, accuracy, F1, ROC AUC, PR AUC, FNR, FPR for all clips, per corpus and per source).
 
 ## Model
 

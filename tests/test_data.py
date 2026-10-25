@@ -136,7 +136,8 @@ def test_dataset_narrowband_flag(hf_splits):
 def test_load_split(hub):
     splits = {name: load_split(name) for name in ("train", "validation", "test")}
     for ds in splits.values():
-        assert ds.column_names == ["id", "audio", "dataset", "label"]
+        assert ds.column_names == ["id", "audio", "dataset", "corpus", "label"]
+        assert all((c == "ttd") == (s in ("spokenwoz", "seamless")) for c, s in zip(ds["corpus"], ds["dataset"]))
         assert ds.features["label"].names == ["incomplete", "complete"]
 
     # smart-turn: English only; train / validation are a random 90/10 split without the holdout sources

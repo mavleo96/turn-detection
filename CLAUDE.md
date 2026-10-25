@@ -39,24 +39,26 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
     loudness_dbfs)` (last `window_s` s -> `band_limit` 16k->8k->16k -> `normalize_loudness` to -30 dBFS RMS),
     `pad_window(x, window_s)` (left zero-pad).
   - `data/dataset.py` `load_split(split, datasets)` (train / validation / test of smart-turn and/or TTD as `id,
-    audio, dataset, label`; audio `AUDIO` = 16 kHz mono, decoded by `datasets`/torchcodec; label
-    `ClassLabel(incomplete, complete)`), `EoTDataset` (augments between prepare_clip and padding, so noise SNR
-    follows the speech), `EoTCollator` (WhisperFeatureExtractor sized for the window; rejects other lengths; bool
-    labels).
+    audio, dataset, corpus, label`; corpus = smart-turn / ttd; audio `AUDIO` = 16 kHz mono, decoded by
+    `datasets`/torchcodec; label `ClassLabel(incomplete, complete)`), `EoTDataset` (augments between prepare_clip
+    and padding, so noise SNR follows the speech), `EoTCollator` (WhisperFeatureExtractor sized for the window;
+    rejects other lengths; bool labels).
   - `data/transforms.py` `build_augment(gain_db=6, noise_p=0.3)`: gain ±6 dB + colored noise (white..brown) 20-40 dB.
   - `model/` `EoTConfig` (whisper name; `encoder_config` = a `WhisperConfig` sub-config with 50 * window_s
     positions, saved and restored, default = Whisper Tiny's architecture, no download; window_s 2/4/8 -> 100 *
     window_s mel frames; head_hidden 64, dropout, threshold, narrowband, loudness_dbfs), `EoTModel`
     (frozen-by-trainer Whisper Tiny encoder -> softmax layer weights over 4 layers -> attention pooling -> MLP).
   - `train/` HF Trainer setup (`trainer.py`), sklearn metrics (`metrics.py`), CLI `python -m turn_detection.train`.
-- `scripts/`: `run_eval.py` (the test split, `--datasets`, per-source breakdown, `--benchmark`) and the exploration
-  scripts `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch
-  `load_dataset` in `dataset`, `explore_dataset` and `samples`).
+- `scripts/`: `run_eval.py <checkpoint>` (test split -> `results/eval/<run>/<checkpoint>/`, tracked: per-clip
+  predictions + metrics for all, per corpus, per source; at the model's threshold) and the exploration scripts
+  `explore_dataset.py`, `samples.py` (raw repos via `load_dataset`; tests patch `load_dataset` in `dataset`,
+  `explore_dataset` and `samples`).
 - The browser mic -> Silero VAD + Nemotron streaming ASR demo was removed from `main`; it is on the `backup` branch
   and in git history (before the removal commit).
 - `serve/` (FastAPI + micro-batching, CPU Dockerfile) lives on the `serve` branch only (ignored on `main`).
-- Generated, gitignored: `artifacts/` (runs, models/untrained), `results/` (analyses; tracked: `data_exploration/`
-  = `explore_dataset.py` output + `EXPLORE.md`, `ttd_vs_smart_turn/` = `FINDINGS.md`).
+- Generated, gitignored: `artifacts/` (runs, models/untrained), `results/` (analyses), except the tracked
+  `results/eval/` (run_eval output), `results/data_exploration/` (`explore_dataset.py` output + `EXPLORE.md`) and
+  `results/ttd_vs_smart_turn/` (`FINDINGS.md`).
 
 ## Training and evaluation
 - `python -m turn_detection.train [--datasets smart-turn ttd] [--window_s 2|4|8]` (defaults: both, 8). One run
@@ -73,7 +75,7 @@ End-of-turn (EoT) detection for voice agents: at a VAD pause, is the user's turn
 - Metrics everywhere: accuracy, f1, fpr (incomplete predicted complete = interrupts), fnr (complete predicted
   incomplete = waits too long), roc_auc, pr_auc.
 - Time on the RTX 3060: TTD ~30 min / 5 epochs (~1,100 clips/s), smart-turn ~7 min, both ~35 min; eval ~2 min.
-- `python scripts/run_eval.py --model artifacts/runs/<run>/best --benchmark`.
+- `python scripts/run_eval.py artifacts/runs/<run>/best` (~1 min).
 
 ## Results so far (test ROC AUC; runs `*-5ep-20261024-075039`)
 | trained on | TTD (SpokenWOZ / Seamless) | smart-turn |

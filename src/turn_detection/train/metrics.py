@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, average_precision_score, f1_score, precision_recall_curve, roc_auc_score
 
+METRICS = ["accuracy", "f1", "roc_auc", "pr_auc", "fnr", "fpr"]
+
 
 def eot_metrics(labels: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> dict:
     """accuracy, f1, fpr, fnr and (when both classes occur) roc_auc and pr_auc."""
@@ -33,15 +35,14 @@ def best_f1_threshold(labels: np.ndarray, probs: np.ndarray) -> float:
 
 
 def breakdown(df: pd.DataFrame, by: str, threshold: float) -> pd.DataFrame:
-    """Metrics per group of `df` (columns: label, prob, and `by`)."""
-    columns = ("accuracy", "f1", "fpr", "fnr", "roc_auc", "pr_auc")
+    """Metrics per group of `df` (columns: label, prob, and `by`): n, complete share and METRICS."""
 
     rows = []
     for key, g in df.groupby(by, sort=True):
         m = eot_metrics(g["label"].to_numpy(), g["prob"].to_numpy(), threshold)
-        row = {by: key, "n": len(g)}
+        row = {by: key, "n": len(g), "complete": g["label"].mean()}
         # Note: roc_auc and pr_auc are missing for single-class groups
-        for k in columns:
+        for k in METRICS:
             row[k] = m.get(k)
         rows.append(row)
 

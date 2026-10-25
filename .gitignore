@@ -228,6 +228,7 @@ wandb/
 results/*
 !results/ttd_vs_smart_turn/
 !results/data_exploration/
+!results/eval/
 
 # temporarily ignore serve directory
 serve/

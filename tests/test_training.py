@@ -1,6 +1,5 @@
 import json
 import os
-from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +8,8 @@ import pytest
 import torch
 from transformers import WhisperFeatureExtractor
 
-from run_eval import evaluate_test
+from run_eval import main as run_eval_main
+from run_eval import predict, summarize
 from turn_detection.data import RUNS_DIR, SAMPLE_RATE, WINDOW_S
 from turn_detection.data.dataset import load_split
 from turn_detection.model import EoTModel
@@ -54,7 +54,7 @@ def last_state(run):
     return max(run.glob("checkpoint-*/trainer_state.json"), key=lambda p: int(p.parent.name.split("-")[1]))
 
 
-def test_train_end_to_end(tmp_path, hub):
+def test_train_end_to_end(tmp_path, hub, monkeypatch):
     model = tiny_model()
     encoder_before = {k: v.clone() for k, v in model.encoder.state_dict().items()}
     run = train(training_args(tmp_path), model=model)
@@ -72,13 +72,42 @@ def test_train_end_to_end(tmp_path, hub):
     feature_extractor = WhisperFeatureExtractor.from_pretrained(run / "best")  # saved by the Trainer
     assert model.config.threshold == results["val_at_threshold_threshold"]
     assert feature_extractor.n_samples == WINDOW_S * SAMPLE_RATE and feature_extractor.nb_max_frames == 800
-    args = Namespace(batch_size=4, device="cpu", workers=0, bf16=False)
     test = load_split("test")
-    result, preds = evaluate_test(model, feature_extractor, test, args)
-    assert result["n"] == len(test) == len(preds) and preds["prob"].between(0, 1).all()
+    preds = predict(model, feature_extractor, test, batch_size=4, workers=0, use_cpu=True)
+    assert list(preds.columns) == ["id", "source", "corpus", "label", "prob", "pred"]
     assert preds["id"].tolist() == test["id"] and preds["label"].tolist() == test["label"]
-    sources = {"human", "tts", "rime_2", "spokenwoz", "seamless"}
-    assert {r["dataset"] for r in result["by_dataset"]} == sources
+    assert (
+        preds["prob"].between(0, 1).all()
+        and preds["pred"].tolist() == (preds["prob"] >= results["val_at_threshold_threshold"]).astype(int).tolist()
+    )
+
+    metrics = summarize(preds, model.config.threshold)
+    groups = {g: set(t["name"]) for g, t in metrics.groupby("group")}
+    assert groups == {
+        "all": {"all"},
+        "corpus": {"smart-turn", "ttd"},
+        "source": {"human", "tts", "rime_2", "spokenwoz", "seamless"},
+    }
+    assert list(metrics.columns) == [
+        "group",
+        "name",
+        "n",
+        "complete",
+        "accuracy",
+        "f1",
+        "roc_auc",
+        "pr_auc",
+        "fnr",
+        "fpr",
+    ]
+    by_corpus = metrics[metrics["group"] == "corpus"].set_index("name")["n"]
+    assert by_corpus.sum() == metrics.loc[metrics["group"] == "all", "n"].item() == len(test)
+
+    # the CLI writes predictions, metrics.csv and metrics.md
+    out = tmp_path / "eval"
+    monkeypatch.setattr("sys.argv", ["run_eval.py", str(run / "best"), "--out", str(out), "--workers", "0", "--cpu"])
+    run_eval_main()
+    assert {p.name for p in out.iterdir()} == {"predictions.parquet", "metrics.csv", "metrics.md"}
 
 
 def test_max_steps_and_limit(tmp_path, hub, monkeypatch):
@@ -140,10 +169,8 @@ def test_train_and_evaluate_a_2s_window(tmp_path, hub):
     feature_extractor = WhisperFeatureExtractor.from_pretrained(run / "best")
     assert model.config.window_s == 2 and model.encoder.config.max_source_positions == 100
     assert feature_extractor.n_samples == 2 * SAMPLE_RATE  # saved with the model, used by run_eval
-    result, _ = evaluate_test(
-        model, feature_extractor, load_split("test"), Namespace(batch_size=4, device="cpu", workers=0, bf16=False)
-    )
-    assert result["n"] == len(load_split("test"))
+    preds = predict(model, feature_extractor, load_split("test"), batch_size=4, workers=0, use_cpu=True)
+    assert len(preds) == len(load_split("test"))
 
     with pytest.raises(ValueError, match="built for 8 s"):
         train(training_args(tmp_path, window_s=2), model=tiny_model())
