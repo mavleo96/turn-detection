@@ -25,8 +25,9 @@ torch and FFmpeg in the image); for 16 kHz mono both give the same samples.
 From the repo root, in the conda env `turn` (the package is already installed there with `pip install -e`):
 
 ```bash
-python scripts/save_untrained.py                       # stand-in model until one is trained
-python -m serve --model artifacts/models/untrained     # http://127.0.0.1:8000, docs at /docs
+# a trained checkpoint (W&B model artifact <run>-best), e.g. both-8s
+wandb artifact get mavleo96-team/turn-detection/both-8s-5ep-20261024-225310-best:best --root artifacts/models/both-8s
+python -m serve --model artifacts/models/both-8s       # http://127.0.0.1:8000, docs at /docs
 ```
 
 | Flag | Env var | Default | |
@@ -71,7 +72,7 @@ Build from the repo root (the image needs `pyproject.toml`, `src/` and `serve/`;
 
 ```bash
 docker build -f serve/Dockerfile -t eot-serve .
-docker run --rm -p 8000:8000 -v "$PWD/artifacts/models/untrained:/model:ro" eot-serve
+docker run --rm -p 8000:8000 -v "$PWD/artifacts/models/both-8s:/model:ro" eot-serve
 ```
 
 The image installs the CPU torch wheel, the pinned `serve/requirements.txt` (with uvloop and httptools for

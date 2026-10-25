@@ -1,7 +1,7 @@
 """Run the inference API (from the repo root):
 
     python -m serve --model artifacts/runs/<run>/best           # http://127.0.0.1:8000
-    python -m serve --model artifacts/models/untrained --workers 2 --threads 2 --max-queue 8
+    python -m serve --model artifacts/models/both-8s --workers 2 --threads 2 --max-queue 8
 
 Every flag also reads an environment variable (used by the Dockerfile): MODEL_DIR, HOST, PORT, DEVICE,
 MAX_BATCH, MAX_WAIT_MS, WORKERS, MAX_QUEUE, TORCH_THREADS, ACCESS_LOG.

@@ -66,7 +66,7 @@ The user's M3 Mac:
 - Benchmark the container, not the host process. The host numbers are ~3x better and misleading for
   deployment.
 - Pattern: `docker run -d --name eot-bench -p 18000:8000 -e TORCH_THREADS=4 -e OMP_WAIT_POLICY=PASSIVE
-  -v "$PWD/artifacts/models/untrained:/model:ro" eot-serve`, wait on `/health`, then
+  -v "$PWD/artifacts/models/both-8s:/model:ro" eot-serve`, wait on `/health`, then
   `python scripts/benchmark.py --url http://127.0.0.1:18000 --workers 1,10 --calls 100`; `docker rm -f` after.
 - The client shares the laptop's CPU with the Docker VM, so heavy steps are pessimistic. Client p50 minus
   server p50 (`srv50`) has been ~1.5–2 ms: the Python client is accurate at this scale.

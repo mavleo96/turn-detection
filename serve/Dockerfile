@@ -1,6 +1,6 @@
 # CPU inference image for the EoT model API (serve/). Build and run from the repo root:
 #   docker build -f serve/Dockerfile -t eot-serve .
-#   docker run --rm -p 8000:8000 -v "$PWD/artifacts/models/untrained:/model:ro" eot-serve
+#   docker run --rm -p 8000:8000 -v "$PWD/artifacts/models/both-8s:/model:ro" eot-serve
 # The model directory (a save_pretrained dir such as <run>/best) is mounted at /model, not baked in.
 FROM python:3.12-slim
 
