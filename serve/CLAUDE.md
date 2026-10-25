@@ -7,8 +7,8 @@ from the code or the README.
 
 - Goal: dockerized FastAPI endpoint, p95 < 100 ms, stress-tested under concurrent calls.
 - Done: workers + small batches + `MAX_QUEUE` 503 shedding, warm-up, `Server-Timing`, uvloop/httptools,
-  `scripts/benchmark.py` (closed loop, 1/2/4/10 workers x 100 calls), `serve/tests` (17, ~4 s; the fixtures export a tiny model, so
-  they run in the training env, not with serve/requirements.txt alone).
+  `scripts/benchmark.py` (closed loop, 1/2/4/10 workers x 100 calls), `serve/tests` (17, ~4 s; the fixtures export
+  a tiny model, so they run in the training env, not with serve/requirements.txt alone).
 - Main's refactor merged (2026-10-25): windows of 2 / 4 / 8 s (`config.window_s`, read per checkpoint);
   serve decodes with soundfile itself (main removed `audio.decode`: decoding is the caller's; training uses
   torchcodec, kept out of the image).
@@ -87,6 +87,7 @@ The user's M3 Mac:
 ## Repo conventions the user expects
 
 - Commit messages: a subject line followed directly by `- ` bullets (no blank line), then the Co-Authored-By
-  trailer. Work on branch `serve`; push only when asked.
-- Both `tests/` (root) and `serve/tests/` are tracked; main's `.gitignore` ignores `serve/`, this branch doesn't.
+  trailer. `serve/` is on `main` since the merge (2026-10-25; the `serve` branch is no longer used); commit and
+  push only when asked.
+- Both `tests/` (root) and `serve/tests/` are tracked, and the root `pytest.ini` runs both.
 - Comments and docstrings are dense, explain why, and match the existing style in `src/turn_detection`.
